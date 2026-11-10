@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "561400523763",
+    "project_id": "bikelight-6f135",
+    "storage_bucket": "bikelight-6f135.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:561400523763:android:e43bea44de7134cec38086",
+        "android_client_info": {
+          "package_name": "com.example.bikelight"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD_c0mUD7ZLX5urSJVGFwwbUzv1wnqnDAM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

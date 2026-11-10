@@ -1,0 +1,206 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:padding="16dp"
+    android:fillViewport="true">
+
+    <GridLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:columnCount="2"
+        android:alignmentMode="alignMargins"
+        android:columnOrderPreserved="false">
+
+        <!-- simulación proximidad -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardSimuladorProximidad"
+            android:layout_width="0dp"
+            android:layout_height="100dp"
+            android:layout_columnWeight="1"
+            android:layout_margin="15dp"
+            android:layout_marginTop="7dp"
+            app:cardCornerRadius="14dp"
+            app:cardBackgroundColor="@color/bikelight_card">
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:gravity="center"
+                android:text="Simulación\nProximidad"
+                android:textColor="@color/white"
+                android:textStyle="bold"
+                android:textSize="14sp" />
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- bicicleta -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardBicicleta"
+            android:layout_width="0dp"
+            android:layout_height="100dp"
+            android:layout_columnWeight="1"
+            android:layout_margin="15dp"
+            android:layout_marginTop="7dp"
+            app:cardCornerRadius="14dp"
+            app:cardBackgroundColor="@color/bikelight_card">
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:text="Bicicleta"
+                android:textColor="@color/white"
+                android:textStyle="bold"
+                android:textSize="14sp" />
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- configuración WiFi -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardConfigWifi"
+            android:layout_width="0dp"
+            android:layout_height="100dp"
+            android:layout_columnWeight="1"
+            android:layout_margin="15dp"
+            android:layout_marginTop="15dp"
+            app:cardCornerRadius="14dp"
+            app:cardBackgroundColor="@color/bikelight_card">
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:gravity="center"
+                android:text="Configuración\nWiFi"
+                android:textColor="@color/white"
+                android:textStyle="bold"
+                android:textSize="14sp" />
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- estado wifi -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardEstadoWifi"
+            android:layout_width="0dp"
+            android:layout_height="100dp"
+            android:layout_columnWeight="1"
+            android:layout_margin="15dp"
+            android:layout_marginTop="15dp"
+            app:cardCornerRadius="14dp"
+            app:cardBackgroundColor="@color/bikelight_card">
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:text="Estado WiFi"
+                android:textColor="@color/white"
+                android:textStyle="bold"
+                android:textSize="14sp" />
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- configuración buzzer -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardConfigBuzzer"
+            android:layout_width="0dp"
+            android:layout_height="100dp"
+            android:layout_columnWeight="1"
+            android:layout_margin="15dp"
+            android:layout_marginTop="7dp"
+            app:cardCornerRadius="14dp"
+            app:cardBackgroundColor="@color/bikelight_card">
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:gravity="center"
+                android:text="Configuración\nBuzzer"
+                android:textColor="@color/white"
+                android:textStyle="bold"
+                android:textSize="14sp" />
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- configuración LED -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardConfigLed"
+            android:layout_width="0dp"
+            android:layout_height="100dp"
+            android:layout_columnWeight="1"
+            android:layout_margin="15dp"
+            android:layout_marginTop="7dp"
+            app:cardCornerRadius="14dp"
+            app:cardBackgroundColor="@color/bikelight_card">
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:gravity="center"
+                android:text="Configuración\nLED"
+                android:textColor="@color/white"
+                android:textStyle="bold"
+                android:textSize="14sp" />
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- modo proximidad -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardModoProximidad"
+            android:layout_width="0dp"
+            android:layout_height="100dp"
+            android:layout_columnWeight="1"
+            android:layout_margin="15dp"
+            android:layout_marginTop="7dp"
+            app:cardCornerRadius="14dp"
+            app:cardBackgroundColor="@color/bikelight_card">
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:gravity="center"
+                android:text="Modo\nProximidad"
+                android:textColor="@color/white"
+                android:textStyle="bold"
+                android:textSize="14sp" />
+        </com.google.android.material.card.MaterialCardView>
+
+
+        <!-- preferencias -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardPreferencias"
+            android:layout_width="0dp"
+            android:layout_height="100dp"
+            android:layout_columnWeight="1"
+            android:layout_margin="15dp"
+            android:layout_marginTop="7dp"
+            app:cardCornerRadius="20dp"
+            app:cardBackgroundColor="@color/bikelight_card">
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:text="Preferencias"
+                android:textColor="@color/white"
+                android:textStyle="bold"
+                android:textSize="14sp" />
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- SOS -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/cardContactoEmergencia"
+            android:layout_width="0dp"
+            android:layout_height="100dp"
+            android:layout_column="0"
+            android:layout_columnSpan="2"
+            android:layout_columnWeight="2"
+            android:layout_gravity="fill_horizontal"
+            android:layout_margin="15dp"
+            android:layout_marginTop="7dp"
+            app:cardCornerRadius="14dp"
+            app:cardBackgroundColor="@color/bikelight_sos">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:text="SOS"
+                android:textColor="@color/white"
+                android:textStyle="bold"
+                android:textSize="16sp" />
+        </com.google.android.material.card.MaterialCardView>
+    </GridLayout>
+</ScrollView>

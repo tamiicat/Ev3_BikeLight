@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- cabecera -->
+    <color name="bikelight_header">#1B132B</color>
+    <color name="bikelight_primary">#D0BCFF</color>
+    <color name="bikelight_primary_dark">#381E72</color>
+
+    <!-- menú y modo oscuro -->
+    <color name="bikelight_card">#4A3B69</color>
+    <color name="bikelight_card_dark">#281F3D</color>
+
+    <!-- fondo y superficies oscuras -->
+    <color name="bikelight_bg">#141218</color>
+    <color name="bikelight_surface">#211F26</color>
+
+    <!-- textos -->
+    <color name="bikelight_text_dark">#E6E0E9</color>
+    <color name="bikelight_text_muted">#938F99</color>
+
+    <!-- botón emergencia -->
+    <color name="bikelight_sos">#93000A</color>
+    <color name="bikelight_sos_dark">#600004</color>
+
+    <!-- base -->
+    <color name="white">#FFFFFF</color>
+</resources>

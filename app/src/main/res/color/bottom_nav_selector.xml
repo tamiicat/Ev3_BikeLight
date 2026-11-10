@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Icono/Texto seleccionado: Morado principal de la app -->
+    <item android:state_checked="true" android:color="@color/bikelight_primary" />
+
+    <!-- Icono/Texto no seleccionado: Gris suave -->
+    <item android:state_checked="false" android:color="@color/bikelight_text_muted" />
+</selector>

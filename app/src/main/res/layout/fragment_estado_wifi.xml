@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:padding="24dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Conexión Actual"
+        android:textSize="22sp"
+        android:textStyle="bold"
+        android:textColor="@color/bikelight_primary"
+        android:layout_marginBottom="10dp" />
+
+    <ImageView
+        android:id="@+id/ivWifiIcon"
+        android:layout_width="180dp"
+        android:layout_height="180dp"
+        android:src="@drawable/wifi"
+        android:contentDescription="Icono WiFi" />
+
+    <TextView
+        android:id="@+id/tvWifiStatusDetail"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Conectando..."
+        android:layout_marginTop="13dp"
+        android:textSize="16sp"
+        android:textColor="#555555" />
+</LinearLayout>

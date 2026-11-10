@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <!-- deja que la app ‘salga’ a internet. Sin esto, Firebase Authentication no funciona -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- permite ver si el dispositivo tiene conexión -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- permite cambiar el estado de la conexión de red -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <!-- permite ver información del Wi-Fi (si está activo, a qué red está conectado). -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- permite activar o desactivar el Wi-Fi o conectarse a redes. -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <!-- permite enviar mensajes de texto desde la aplicación (utilizado para el mensaje SOS). -->
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <!-- ubicación exacta (GPS) -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- Ubicación aproximada (por antenas o Wi-Fi) -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <uses-feature
+        android:name="android.hardware.telephony"
+        android:required="false" />
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@drawable/icono"
+        android:label="@string/app_name"
+        android:roundIcon="@drawable/bici"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.BikeLight">
+
+        <!-- inicio de sesión -->
+        <activity
+            android:name=".ui.auth.AuthActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- registrar cuenta -->
+        <activity
+            android:name=".ui.auth.RegisterActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- restablecer contraseña -->
+        <activity
+            android:name=".ui.auth.ResetPasswordActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <!-- pantalla Principal -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+    </application>
+</manifest>

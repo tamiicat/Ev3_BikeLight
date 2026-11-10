@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- switch activo -->
+    <item android:state_checked="true" android:color="@color/bikelight_sos" />
+    <!-- swtich desactivado -->
+    <item android:color="#E0E0E0" />
+</selector>
