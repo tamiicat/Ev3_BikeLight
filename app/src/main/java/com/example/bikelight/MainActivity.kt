@@ -23,16 +23,18 @@ class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
 
     // Configuración para el Nodo B (ESP32)
-    private val esp32Ip = "192.168.4.1" // IP por defecto en modo Access Point del ESP32
+    private val esp32Ip = "192.168.4.1"
     private val puertoUdp = 4210
     var udpClient: UdpClient? = null
+        private set
+
+    var isEsp32Connected: Boolean = false
         private set
 
     private lateinit var connectivityManager: ConnectivityManager
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        // Aplicar tema claro/oscuro
         val prefs = getSharedPreferences("BikeLightPrefs", Context.MODE_PRIVATE)
         val temaGuardado = prefs.getInt("app_theme_mode", AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM)
         AppCompatDelegate.setDefaultNightMode(temaGuardado)
@@ -41,73 +43,95 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // Inicializar cliente UDP
         udpClient = UdpClient(esp32Ip, puertoUdp)
-
-        // Inicializar administrador de conectividad
         connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
-        // Iniciar monitoreo y reconexión automática
-        iniciarMonitoreoRedWiFi()
+        // Intento inicial automático con el nuevo SSID
+        conectarARedEsp32("RED BIKELIGHT", "75648955!")
 
         setupBottomNavigation()
 
-        // Cargar tema por defecto
         if (savedInstanceState == null) {
             binding.bottomNavigation.selectedItemId = R.id.nav_home
         }
     }
 
     /**
-     * Monitorea la red del ESP32. Si se pierde la señal y vuelve a estar disponible,
-     * la App se reconecta automáticamente sin intervención del usuario.
+     * Inicia o reinicia limpiamente la conexión hacia el Access Point del ESP32.
+     * Puede llamarse al iniciar la app o desde WifiConfigFragment.
      */
-    private fun iniciarMonitoreoRedWiFi() {
-        val wifiSpecifier = WifiNetworkSpecifier.Builder()
-            .setSsid("ProyectoSensor")
-            .setWpa2Passphrase("75648955!")
-            .build()
+    fun conectarARedEsp32(ssid: String = "RED BIKELIGHT", password: String = "75648955!") {
+        // 1. Liberar cualquier solicitud anterior para evitar el error "Conexión rechazada"
+        liberarRedActual()
+
+        val specifierBuilder = WifiNetworkSpecifier.Builder()
+            .setSsid(ssid.trim())
+
+        if (password.isNotEmpty()) {
+            specifierBuilder.setWpa2Passphrase(password)
+        }
 
         val networkRequest = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) // Importante: Red local sin internet
-            .setNetworkSpecifier(wifiSpecifier)
+            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .setNetworkSpecifier(specifierBuilder.build())
             .build()
 
         networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 super.onAvailable(network)
-                // Enlaza el proceso de la App a la red WiFi del ESP32 para ignorar datos móviles
                 connectivityManager.bindProcessToNetwork(network)
-
-                // Reinicia el socket UDP
                 udpClient?.resetSocket()
+                isEsp32Connected = true
 
                 runOnUiThread {
-                    Toast.makeText(this@MainActivity, "Conectado automáticamente a ProyectoSensor", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Conectado a $ssid", Toast.LENGTH_SHORT).show()
                 }
             }
 
             override fun onLost(network: Network) {
                 super.onLost(network)
-                // Liberar el enlace cuando se sale del rango de la red
                 connectivityManager.bindProcessToNetwork(null)
                 udpClient?.resetSocket()
+                isEsp32Connected = false
 
                 runOnUiThread {
-                    Toast.makeText(this@MainActivity, "Conexión perdida con el ESP32. Reintentando...", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Conexión perdida con $ssid", Toast.LENGTH_SHORT).show()
                 }
             }
 
             override fun onUnavailable() {
                 super.onUnavailable()
+                isEsp32Connected = false
                 runOnUiThread {
-                    Toast.makeText(this@MainActivity, "Dispositivo ESP32 no encontrado en el rango", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Conexión rechazada o red '$ssid' no encontrada",
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
             }
         }
 
-        connectivityManager.requestNetwork(networkRequest, networkCallback!!)
+        try {
+            connectivityManager.requestNetwork(networkRequest, networkCallback!!)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Toast.makeText(this, "Error al solicitar red Wi-Fi: ${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun liberarRedActual() {
+        networkCallback?.let {
+            try {
+                connectivityManager.bindProcessToNetwork(null)
+                connectivityManager.unregisterNetworkCallback(it)
+            } catch (_: Exception) {
+                // Ignorar si ya estaba desregistrado
+            }
+        }
+        networkCallback = null
+        isEsp32Connected = false
     }
 
     private fun setupBottomNavigation() {
@@ -118,7 +142,7 @@ class MainActivity : AppCompatActivity() {
                     true
                 }
                 R.id.nav_home -> {
-                    cargarFragment(HomeDashboardFragment(), "BikeLight")
+                    cargarFragment(HomeDashboardFragment(), "RED BIKELIGHT")
                     true
                 }
                 R.id.nav_logout -> {
@@ -143,15 +167,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        // Desenlazar red y cerrar socket de forma limpia
-        networkCallback?.let {
-            try {
-                connectivityManager.bindProcessToNetwork(null)
-                connectivityManager.unregisterNetworkCallback(it)
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
+        liberarRedActual()
         udpClient?.close()
     }
 }
