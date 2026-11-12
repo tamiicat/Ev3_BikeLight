@@ -9,18 +9,18 @@ import android.widget.ArrayAdapter
 import android.widget.SeekBar
 import android.widget.Toast
 import androidx.fragment.app.Fragment
+import androidx.fragment.app.activityViewModels
 import androidx.lifecycle.lifecycleScope
 import com.example.bikelight.R
 import com.example.bikelight.databinding.FragmentLedConfigBinding
-import com.example.bikelight.UdpClient
+import com.example.bikelight.ui.devices.UdpClientManager
 import kotlinx.coroutines.launch
 
 class LedConfigFragment : Fragment() {
     private var _binding: FragmentLedConfigBinding? = null
     private val binding get() = _binding!!
 
-    // CORRECCIÓN 2: Instanciar la clase UdpClient apuntando al ESP32
-    private val udpClient = UdpClient("192.168.4.1", 4210)
+    private val wifiViewModel: WifiConnectionViewModel by activityViewModels()
 
     private val opcionesColores = listOf(
         "Seleccione una opción",
@@ -63,6 +63,12 @@ class LedConfigFragment : Fragment() {
         binding.btnGuardarLed.setOnClickListener {
             guardarConfiguracionLed()
         }
+
+        // Cada vez que el ESP32 se (re)conecta, el Arduino puede haberse reiniciado
+        // y perdido la configuración: se la reenviamos.
+        wifiViewModel.wifiStatus.observe(viewLifecycleOwner) { status ->
+            if (status is WifiStatus.Connected) reenviarConfiguracionGuardada()
+        }
     }
 
     private fun configurarSpinners() {
@@ -78,13 +84,12 @@ class LedConfigFragment : Fragment() {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 binding.tvValorBrilloActual.text = "$progress%"
             }
+
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
 
             override fun onStopTrackingTouch(seekBar: SeekBar?) {
                 seekBar?.let {
-                    viewLifecycleOwner.lifecycleScope.launch {
-                        udpClient.sendCommand("""{"brillo":${it.progress}}""")
-                    }
+                    enviarComando("""{"brillo":${it.progress}}""", null)
                 }
             }
         })
@@ -92,17 +97,41 @@ class LedConfigFragment : Fragment() {
 
     private fun configurarBotonesManuales() {
         binding.btnActivarLed.setOnClickListener {
-            viewLifecycleOwner.lifecycleScope.launch {
-                udpClient.sendCommand("""{"modo":"manual", "estado":true}""")
+            val colorIdx = binding.spinnerLedColors.selectedItemPosition
+            val efectoIdx = binding.spinnerEffectColors.selectedItemPosition
+            val brillo = binding.seekBarBrightness.progress
+
+            if (colorIdx == 0 || efectoIdx == 0) {
+                Toast.makeText(requireContext(), "Selecciona un patrón de color y un efecto válidos", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
             }
-            Toast.makeText(requireContext(), "LEDs encendidos manualmente", Toast.LENGTH_SHORT).show()
+
+            enviarComando(
+                """{"modo":"manual","estado":true,"color":$colorIdx,"efecto":$efectoIdx,"brillo":$brillo}""",
+                "LEDs encendidos manualmente"
+            )
         }
 
         binding.btnDesactivarLed.setOnClickListener {
-            viewLifecycleOwner.lifecycleScope.launch {
-                udpClient.sendCommand("""{"modo":"manual", "estado":false}""")
+            enviarComando("""{"modo":"manual","estado":false}""", "LEDs apagados")
+        }
+    }
+
+    /**
+     * Envía el comando y avisa según la CONFIRMACIÓN real del Arduino.
+     * Si mensajeExito es null, solo avisa cuando falla.
+     */
+    private fun enviarComando(json: String, mensajeExito: String?, alTerminar: ((Boolean) -> Unit)? = null) {
+        viewLifecycleOwner.lifecycleScope.launch {
+            val ok = UdpClientManager.sendCommand(json)
+            alTerminar?.invoke(ok)
+            val ctx = context ?: return@launch
+            when {
+                ok && mensajeExito != null ->
+                    Toast.makeText(ctx, mensajeExito, Toast.LENGTH_SHORT).show()
+                !ok ->
+                    Toast.makeText(ctx, "El dispositivo no respondió. Revisa la conexión Wi-Fi con la red BIKELIGHT", Toast.LENGTH_LONG).show()
             }
-            Toast.makeText(requireContext(), "LEDs apagados", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -132,11 +161,21 @@ class LedConfigFragment : Fragment() {
         }
     }
 
-    private fun guardarConfiguracionLed() {
-        val colorSeleccionado = binding.spinnerLedColors.selectedItem.toString()
-        val efectoSeleccionado = binding.spinnerEffectColors.selectedItem.toString()
-        val brilloSeleccionado = binding.seekBarBrightness.progress
+    private fun reenviarConfiguracionGuardada() {
+        val prefs = requireContext().getSharedPreferences("BikeLightPrefs", Context.MODE_PRIVATE)
+        val colorIdx = opcionesColores.indexOf(prefs.getString("led_color", null))
+        val efectoIdx = opcionesEfectos.indexOf(prefs.getString("led_efecto", null))
+        val brillo = prefs.getInt("led_brillo", -1)
 
+        if (colorIdx > 0 && efectoIdx > 0 && brillo != -1) {
+            enviarComando(
+                """{"modo":"auto","color":$colorIdx,"efecto":$efectoIdx,"brillo":$brillo}""",
+                null
+            )
+        }
+    }
+
+    private fun guardarConfiguracionLed() {
         val colorIdx = binding.spinnerLedColors.selectedItemPosition
         val efectoIdx = binding.spinnerEffectColors.selectedItemPosition
 
@@ -145,28 +184,31 @@ class LedConfigFragment : Fragment() {
             return
         }
 
-        viewLifecycleOwner.lifecycleScope.launch {
-            udpClient.sendCommand("""{"modo":"auto", "color":$colorIdx, "efecto":$efectoIdx, "brillo":$brilloSeleccionado}""")
+        val colorSeleccionado = binding.spinnerLedColors.selectedItem.toString()
+        val efectoSeleccionado = binding.spinnerEffectColors.selectedItem.toString()
+        val brilloSeleccionado = binding.seekBarBrightness.progress
+
+        enviarComando(
+            """{"modo":"auto","color":$colorIdx,"efecto":$efectoIdx,"brillo":$brilloSeleccionado}""",
+            "Configuración aplicada en el dispositivo"
+        ) { ok ->
+            // Solo se guarda localmente si el Arduino confirmó la configuración
+            if (ok && _binding != null) {
+                requireContext().getSharedPreferences("BikeLightPrefs", Context.MODE_PRIVATE).edit().apply {
+                    putString("led_color", colorSeleccionado)
+                    putString("led_efecto", efectoSeleccionado)
+                    putInt("led_brillo", brilloSeleccionado)
+                    apply()
+                }
+                binding.tvDisplayColor.text = "Colores: $colorSeleccionado"
+                binding.tvDisplayEfecto.text = "Efecto: $efectoSeleccionado"
+                binding.tvDisplayBrillo.text = "Nivel de Brillo: $brilloSeleccionado%"
+            }
         }
-
-        val prefs = requireContext().getSharedPreferences("BikeLightPrefs", Context.MODE_PRIVATE)
-        prefs.edit().apply {
-            putString("led_color", colorSeleccionado)
-            putString("led_efecto", efectoSeleccionado)
-            putInt("led_brillo", brilloSeleccionado)
-            apply()
-        }
-
-        binding.tvDisplayColor.text = "Colores: $colorSeleccionado"
-        binding.tvDisplayEfecto.text = "Efecto: $efectoSeleccionado"
-        binding.tvDisplayBrillo.text = "Nivel de Brillo: $brilloSeleccionado%"
-
-        Toast.makeText(requireContext(), "Configuración de LEDs guardada exitosamente", Toast.LENGTH_SHORT).show()
     }
 
     override fun onDestroyView() {
         super.onDestroyView()
-        udpClient.close()
         _binding = null
     }
 
