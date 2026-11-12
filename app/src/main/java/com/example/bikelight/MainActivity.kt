@@ -10,18 +10,32 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.fragment.app.Fragment
+import androidx.lifecycle.lifecycleScope
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import com.example.bikelight.data.local.AppDatabase
+import com.example.bikelight.data.local.SensorReading
+import com.example.bikelight.data.sync.SyncReadingsWorker
 import com.example.bikelight.databinding.ActivityMainBinding
 import com.example.bikelight.ui.auth.AuthActivity
+import com.example.bikelight.ui.home.HistorialFragment
 import com.example.bikelight.ui.home.HomeDashboardFragment
 import com.example.bikelight.ui.home.PerfilFragment
 import com.example.bikelight.ui.home.WifiConnectionViewModel
 import com.example.bikelight.ui.home.WifiStatus
 import com.google.firebase.auth.FirebaseAuth
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import org.json.JSONObject
 
 class MainActivity : AppCompatActivity() {
 
@@ -42,6 +56,8 @@ class MainActivity : AppCompatActivity() {
     var connectedSsid: String = ""
         private set
 
+    var modoProximidadActual: String = "Ciudad"
+
     // Variables de control para reconexión automática
     private var targetSsid: String = "RED BIKELIGHT"
     private var targetPassword: String = "75648955!"
@@ -50,7 +66,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var connectivityManager: ConnectivityManager
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
-    // Temporizador para reintentar conexión cada 5 segundos al perder señal
     private val reconnectHandler = Handler(Looper.getMainLooper())
     private val reconnectRunnable = object : Runnable {
         override fun run() {
@@ -72,9 +87,13 @@ class MainActivity : AppCompatActivity() {
         udpClient = UdpClient(esp32Ip, puertoUdp)
         connectivityManager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
 
+        // Iniciar recepción continua de paquetes reales del ESP32 en toda la app
+        iniciarRecepcionGlobalUdp()
+
         // Intento inicial automático con el SSID configurado
         conectarARedEsp32(targetSsid, targetPassword)
 
+        setupTopNavigation()
         setupBottomNavigation()
 
         if (savedInstanceState == null) {
@@ -82,16 +101,103 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Inicia o reintenta limpiamente la conexión hacia el Access Point del ESP32
-     * y notifica en tiempo real al WifiConnectionViewModel.
-     */
+    private fun iniciarRecepcionGlobalUdp() {
+        val udp = udpClient ?: return
+        udp.startListening()
+        Log.d("BikeLightUDP", "Escucha UDP iniciada en puerto $puertoUdp")
+
+        udp.onMessageReceived = { rawPayload ->
+            Log.d("BikeLightUDP", "Paquete crudo recibido: '$rawPayload'")
+            val uid = FirebaseAuth.getInstance().currentUser?.uid ?: ""
+            val lecturaParseada = parsearPaqueteMicrocontrolador(rawPayload, uid)
+
+            if (lecturaParseada == null) {
+                Log.w("BikeLightUDP", "Paquete descartado por formato inválido: '$rawPayload'")
+            } else {
+                Log.d("BikeLightUDP", "Paquete válido guardado en Room: $lecturaParseada")
+                lifecycleScope.launch(Dispatchers.IO) {
+                    val db = AppDatabase.getDatabase(applicationContext)
+                    val rowId = db.sensorReadingDao().insertReading(lecturaParseada)
+                    Log.d("BikeLightUDP", "Insertado en Room con ID=$rowId. Encolando sincronización...")
+                    programarSincronizacionFirebase()
+                }
+            }
+        }
+    }
+
+    private fun parsearPaqueteMicrocontrolador(payload: String, uid: String): SensorReading? {
+        return try {
+            val ahora = System.currentTimeMillis()
+            val textoLimpio = payload.trim()
+            if (textoLimpio.startsWith("{")) {
+                val json = JSONObject(textoLimpio)
+                val dist = json.optDouble("distancia", json.optDouble("distance", -1.0)).toFloat()
+                if (dist < 0f) return null
+                val riesgo = json.optString("riesgo", calcularNivelRiesgo(dist))
+                SensorReading(
+                    uid = uid,
+                    distanceCm = dist,
+                    riskLevel = riesgo,
+                    proximityMode = modoProximidadActual,
+                    timestamp = ahora,
+                    isSynced = false
+                )
+            } else {
+                val partes = textoLimpio.split(",")
+                val dist = partes[0].trim().toFloatOrNull() ?: return null
+                val riesgo = if (partes.size > 1) partes[1].trim() else calcularNivelRiesgo(dist)
+                SensorReading(
+                    uid = uid,
+                    distanceCm = dist,
+                    riskLevel = riesgo,
+                    proximityMode = modoProximidadActual,
+                    timestamp = ahora,
+                    isSynced = false
+                )
+            }
+        } catch (e: Exception) {
+            Log.e("BikeLightUDP", "Error al parsear paquete '$payload': ${e.message}")
+            null
+        }
+    }
+
+    private fun calcularNivelRiesgo(distanciaCm: Float): String {
+        return when {
+            distanciaCm <= 100f -> "CRITICO"
+            distanciaCm <= 200f -> "MEDIO"
+            else -> "BAJO"
+        }
+    }
+
+    fun programarSincronizacionFirebase(forzarReemplazo: Boolean = false) {
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+
+        val syncWorkRequest = OneTimeWorkRequestBuilder<SyncReadingsWorker>()
+            .setConstraints(constraints)
+            .build()
+
+        val policy = if (forzarReemplazo) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP
+
+        WorkManager.getInstance(applicationContext).enqueueUniqueWork(
+            "SyncSensorReadingsOfflineWork",
+            policy,
+            syncWorkRequest
+        )
+    }
+
+    private fun setupTopNavigation() {
+        binding.btnTopHistorial.setOnClickListener {
+            cargarFragment(HistorialFragment(), "Historial de Paquetes")
+        }
+    }
+
     fun conectarARedEsp32(
         ssid: String = "RED BIKELIGHT",
         password: String = "75648955!",
         esReintento: Boolean = false
     ) {
-        // Cancelar cualquier reintento en cola antes de lanzar uno nuevo
         reconnectHandler.removeCallbacks(reconnectRunnable)
 
         targetSsid = ssid.trim()
@@ -148,7 +254,6 @@ class MainActivity : AppCompatActivity() {
                         ).show()
                     }
 
-                    // Programar reconexión automática en 5 segundos
                     programarReintento()
                 }
 
@@ -172,7 +277,6 @@ class MainActivity : AppCompatActivity() {
                         }
                     }
 
-                    // Si el ESP32 aún no vuelve a estar en rango, reintentar en 5 segundos
                     programarReintento()
                 }
             }
@@ -246,12 +350,14 @@ class MainActivity : AppCompatActivity() {
         binding.tvHeaderTitle.text = title
         supportFragmentManager.beginTransaction()
             .replace(R.id.fragmentContainer, fragment)
+            .addToBackStack(null)
             .commit()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         liberarRedActual(detenerReintentos = true)
+        udpClient?.onMessageReceived = null
         udpClient?.close()
     }
 }

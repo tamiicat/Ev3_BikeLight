@@ -16,11 +16,14 @@ interface SensorReadingDao {
     suspend fun getUnsyncedReadings(): List<SensorReading>
 
     @Query("UPDATE sensor_readings SET isSynced = 1 WHERE id = :readingId")
-    suspend fun markAsSynced(readingId: Int)
+    suspend fun markAsSynced(readingId: Int): Int
 
     @Query("SELECT COUNT(*) FROM sensor_readings WHERE isSynced = 0")
     fun observePendingCount(): LiveData<Int>
 
     @Query("SELECT * FROM sensor_readings ORDER BY timestamp DESC LIMIT 15")
     fun observeRecentReadings(): LiveData<List<SensorReading>>
+
+    @Query("SELECT * FROM sensor_readings ORDER BY timestamp DESC")
+    fun observeAllReadings(): LiveData<List<SensorReading>>
 }
