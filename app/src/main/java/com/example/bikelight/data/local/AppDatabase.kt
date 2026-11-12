@@ -5,14 +5,19 @@ import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
 
-@Database(entities = [UserProfile::class], version = 2, exportSchema = false) // <- Se sube la versión a 2
+@Database(
+    entities = [UserProfile::class, SensorReading::class],
+    version = 3,
+    exportSchema = false
+)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun userDao(): UserDao
+    abstract fun sensorReadingDao(): SensorReadingDao
 
     companion object {
         @Volatile
         private var INSTANCE: AppDatabase? = null
-        // obtiene instancia única de bd
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -20,7 +25,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "bikelight_db"
                 )
-                    .fallbackToDestructiveMigration() // evita el cierre forzos
+                    .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance
                 instance

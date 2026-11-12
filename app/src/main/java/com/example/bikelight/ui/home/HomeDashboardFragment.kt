@@ -12,9 +12,16 @@ import androidx.appcompat.app.AlertDialog
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 import com.example.bikelight.MainActivity
 import com.example.bikelight.data.local.AppDatabase
+import com.example.bikelight.data.local.SensorReading
 import com.example.bikelight.data.local.UserProfile
+import com.example.bikelight.data.sync.SyncReadingsWorker
 import com.example.bikelight.databinding.FragmentHomeDashboardBinding
 import com.example.bikelight.security.CryptoUtils
 import com.example.bikelight.ui.devices.SimuladorProximidadFragment
@@ -23,10 +30,10 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.FirebaseDatabase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import org.json.JSONObject
 
 class HomeDashboardFragment : Fragment() {
 
-    // Registra el resultado de permisos de ubicación GPS para SOS
     private val locationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
@@ -51,6 +58,8 @@ class HomeDashboardFragment : Fragment() {
     private var _binding: FragmentHomeDashboardBinding? = null
     private val binding get() = _binding!!
 
+    private var modoProximidadActual: String = "Ciudad"
+
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
     ): View {
@@ -63,8 +72,9 @@ class HomeDashboardFragment : Fragment() {
         val mainActivity = activity as? MainActivity
 
         cargarDatosUsuario()
+        iniciarRecepcionOfflineFirst(mainActivity)
+        programarSincronizacionFirebase()
 
-        // Configuración de la navegación de cada tarjeta del Dashboard
         binding.cardSimuladorProximidad.setOnClickListener {
             mainActivity?.cargarFragment(SimuladorProximidadFragment(), "Proximidad del Sensor")
         }
@@ -97,7 +107,6 @@ class HomeDashboardFragment : Fragment() {
             mainActivity?.cargarFragment(PreferenciasFragment(), "Preferencias")
         }
 
-        // Mensaje de alerta SOS de emergencia
         binding.cardContactoEmergencia.setOnClickListener {
             AlertDialog.Builder(requireContext())
                 .setTitle("¡ALERTA DE EMERGENCIA!")
@@ -113,7 +122,6 @@ class HomeDashboardFragment : Fragment() {
                         Manifest.permission.ACCESS_COARSE_LOCATION
                     ) == PackageManager.PERMISSION_GRANTED
 
-                    // Solicita permisos de ubicación si no están otorgados
                     if (!tienePermisoFine && !tienePermisoCoarse) {
                         locationPermissionLauncher.launch(
                             arrayOf(
@@ -132,16 +140,92 @@ class HomeDashboardFragment : Fragment() {
         }
     }
 
-    /**
-     * Función helper accesible desde este fragmento o subpantallas
-     * para enviar comandos UDP ('1', '0', etc.) directamente al ESP32.
-     */
+    private fun iniciarRecepcionOfflineFirst(mainActivity: MainActivity?) {
+        val udp = mainActivity?.udpClient ?: return
+        udp.startListening()
+
+        udp.onMessageReceived = { rawPayload ->
+            val contextSafe = context
+            if (contextSafe != null) {
+                val uid = FirebaseAuth.getInstance().currentUser?.uid ?: ""
+                val lecturaParseada = parsearPaqueteMicrocontrolador(rawPayload, uid)
+
+                if (lecturaParseada != null) {
+                    viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
+                        val db = AppDatabase.getDatabase(contextSafe)
+                        db.sensorReadingDao().insertReading(lecturaParseada)
+                        programarSincronizacionFirebase()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun parsearPaqueteMicrocontrolador(payload: String, uid: String): SensorReading? {
+        return try {
+            val ahora = System.currentTimeMillis()
+            if (payload.startsWith("{")) {
+                val json = JSONObject(payload)
+                val dist = json.optDouble("distancia", json.optDouble("distance", -1.0)).toFloat()
+                if (dist < 0f) return null
+                val riesgo = json.optString("riesgo", calcularNivelRiesgo(dist))
+                SensorReading(
+                    uid = uid,
+                    distanceCm = dist,
+                    riskLevel = riesgo,
+                    proximityMode = modoProximidadActual,
+                    timestamp = ahora,
+                    isSynced = false
+                )
+            } else {
+                val partes = payload.split(",")
+                val dist = partes[0].trim().toFloatOrNull() ?: return null
+                val riesgo = if (partes.size > 1) partes[1].trim() else calcularNivelRiesgo(dist)
+                SensorReading(
+                    uid = uid,
+                    distanceCm = dist,
+                    riskLevel = riesgo,
+                    proximityMode = modoProximidadActual,
+                    timestamp = ahora,
+                    isSynced = false
+                )
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun calcularNivelRiesgo(distanciaCm: Float): String {
+        return when {
+            distanciaCm <= 100f -> "CRITICO"
+            distanciaCm <= 200f -> "MEDIO"
+            else -> "BAJO"
+        }
+    }
+
+    private fun programarSincronizacionFirebase() {
+        val contextSafe = context ?: return
+
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+
+        val syncWorkRequest = OneTimeWorkRequestBuilder<SyncReadingsWorker>()
+            .setConstraints(constraints)
+            .build()
+
+        WorkManager.getInstance(contextSafe).enqueueUniqueWork(
+            "SyncSensorReadingsOfflineWork",
+            ExistingWorkPolicy.KEEP,
+            syncWorkRequest
+        )
+    }
+
     fun enviarComandoAlEsp32(comando: String) {
         val mainActivity = activity as? MainActivity
         mainActivity?.udpClient?.sendCommand(comando)
     }
 
-    // Carga los datos del usuario y descifra información clave
     private fun cargarDatosUsuario() {
         val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
         val contextSafe = context ?: return
@@ -150,12 +234,14 @@ class HomeDashboardFragment : Fragment() {
             val db = AppDatabase.getDatabase(contextSafe)
             val userLocal = db.userDao().getUserProfile(uid)
 
-            // Si no está en almacenamiento local, sincronizar desde Firebase
-            if (userLocal == null) {
+            if (userLocal != null) {
+                modoProximidadActual = userLocal.proximityMode
+            } else {
                 FirebaseDatabase.getInstance().reference.child("users").child(uid).get()
                     .addOnSuccessListener { snapshot ->
                         val userFirebase = snapshot.getValue(UserProfile::class.java)
                         if (userFirebase != null) {
+                            modoProximidadActual = userFirebase.proximityMode
                             val userDescifrado = userFirebase.copy(
                                 fullName = CryptoUtils.decrypt(userFirebase.fullName),
                                 phone = CryptoUtils.decrypt(userFirebase.phone),
@@ -174,6 +260,8 @@ class HomeDashboardFragment : Fragment() {
 
     override fun onDestroyView() {
         super.onDestroyView()
+        val mainActivity = activity as? MainActivity
+        mainActivity?.udpClient?.onMessageReceived = null
         _binding = null
     }
 }

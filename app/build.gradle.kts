@@ -56,6 +56,8 @@ dependencies {
     implementation("com.google.firebase:firebase-messaging-ktx")
     // registro de métricas, eventos de uso y comportamiento del usuario dentro de la aplicación
     implementation("com.google.firebase:firebase-analytics-ktx")
+    // garantizar que la subida a Firebase se ejecute en segundo plano
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
 
     // PERSISTENCIA LOCAL - ROOM DATABASE
     val roomVersion = "2.7.0-alpha01"
