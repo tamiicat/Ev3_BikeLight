@@ -1,6 +1,5 @@
 package com.example.bikelight.ui.home
 
-import android.Manifest
 import android.content.Context
 import android.media.AudioManager
 import android.media.ToneGenerator
@@ -14,7 +13,6 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.ArrayAdapter
 import android.widget.Toast
-import androidx.annotation.RequiresPermission
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
 import androidx.lifecycle.lifecycleScope
@@ -221,20 +219,24 @@ class BuzzerFragment : Fragment() {
     }
 
     // emite tono acústico y vibración en el teléfono (simulación local)
-    @RequiresPermission(Manifest.permission.VIBRATE)
     private fun ejecutarSimulacion(duracionMs: Int) {
         toneGenerator?.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, duracionMs)
 
         val context = context ?: return
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
-            vibratorManager.defaultVibrator.vibrate(
-                VibrationEffect.createOneShot(duracionMs.toLong(), VibrationEffect.DEFAULT_AMPLITUDE)
-            )
-        } else {
-            @Suppress("DEPRECATION")
-            val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
-            vibrator.vibrate(duracionMs.toLong())
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+                vibratorManager.defaultVibrator.vibrate(
+                    VibrationEffect.createOneShot(duracionMs.toLong(), VibrationEffect.DEFAULT_AMPLITUDE)
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                val vibrator = context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                vibrator.vibrate(duracionMs.toLong())
+            }
+        } catch (e: SecurityException) {
+            // Falta <uses-permission android:name="android.permission.VIBRATE" /> en el AndroidManifest.xml.
+            // El tono sí suena; solo se omite la vibración en vez de cerrar la app.
         }
     }
 
