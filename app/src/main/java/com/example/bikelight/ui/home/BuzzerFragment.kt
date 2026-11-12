@@ -16,14 +16,22 @@ import android.widget.ArrayAdapter
 import android.widget.Toast
 import androidx.annotation.RequiresPermission
 import androidx.fragment.app.Fragment
+import androidx.fragment.app.activityViewModels
+import androidx.lifecycle.lifecycleScope
 import com.example.bikelight.R
 import com.example.bikelight.databinding.FragmentBuzzerConfigBinding
+import com.example.bikelight.ui.devices.Nodo
+import com.example.bikelight.ui.devices.UdpClientManager
+import kotlinx.coroutines.launch
 
 class BuzzerFragment : Fragment() {
     private var _binding: FragmentBuzzerConfigBinding? = null
     private val binding get() = _binding!!
     private var toneGenerator: ToneGenerator? = null
     private var isSimulando: Boolean = false
+
+    // Estado de la conexión Wi-Fi (lo publica MainActivity)
+    private val wifiViewModel: WifiConnectionViewModel by activityViewModels()
 
     private val opcionesFrecuencia = arrayOf(
         "Seleccione una opción",
@@ -54,7 +62,7 @@ class BuzzerFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        // generador de audios
+        // generador de audios (simulación local en el teléfono)
         toneGenerator = ToneGenerator(AudioManager.STREAM_ALARM, 100)
 
         // configuración de spinners de frecuencia y duración
@@ -67,35 +75,101 @@ class BuzzerFragment : Fragment() {
         // carga los valores guardados
         cargarConfiguracionBuzzer()
 
-        // guardar configuración
+        // guardar configuración (se aplica en el buzzer real del ESP32)
         binding.btnGuardarBuzzer.setOnClickListener {
             guardarConfiguracionBuzzer()
         }
 
-        // activar simulación de funcionamiento del buzzer
+        // probar el buzzer: suena el del ESP32 y se simula en el teléfono
         binding.btnActivar.setOnClickListener {
-            val duracionTexto = binding.spinnerDuracion.selectedItem.toString()
-            val duracionMs = when {
-                duracionTexto.contains("0.05s") -> 50
-                duracionTexto.contains("0.10s") -> 100
-                duracionTexto.contains("0.25s") -> 250
-                duracionTexto.contains("0.50s") -> 500
-                duracionTexto.contains("1.00s") -> 1000
-                else -> 200
+            val frecuenciaHz = if (binding.spinnerFrecuencia.selectedItemPosition > 0) {
+                frecuenciaEnHz(binding.spinnerFrecuencia.selectedItem.toString())
+            } else {
+                FRECUENCIA_POR_DEFECTO_HZ
             }
+            val duracionMs = duracionEnMs(binding.spinnerDuracion.selectedItem.toString())
 
             isSimulando = true
             ejecutarSimulacion(duracionMs)
-            Toast.makeText(requireContext(), "Buzzer Activado ($duracionMs ms)", Toast.LENGTH_SHORT).show()
+
+            enviarAlEsp32(
+                """{"buzzer_frec":$frecuenciaHz,"buzzer_dur":$duracionMs,"buzzer_prueba":true}""",
+                "Buzzer activado ($duracionMs ms)"
+            )
         }
 
-        // desactivar simulación
+        // detener la prueba
         binding.btnDesactivar.setOnClickListener {
             isSimulando = false
             toneGenerator?.stopTone()
-            Toast.makeText(requireContext(), "Buzzer Desactivado", Toast.LENGTH_SHORT).show()
+            enviarAlEsp32("""{"buzzer_prueba":false}""", "Buzzer desactivado")
+        }
+
+        // Si el ESP32 se reinicia o se reconecta, pierde la configuración: se la reenviamos
+        wifiViewModel.wifiStatus.observe(viewLifecycleOwner) { status ->
+            if (status is WifiStatus.Connected) reenviarConfiguracionGuardada()
         }
     }
+
+    // ---------- Comunicación con el ESP32 (Nodo B) ----------
+
+    /**
+     * Envía un comando JSON SOLO al ESP32 (Nodo B, donde está el buzzer) y avisa
+     * según la confirmación real. Si mensajeExito es null, solo avisa cuando falla.
+     */
+    private fun enviarAlEsp32(
+        json: String,
+        mensajeExito: String?,
+        alTerminar: ((Boolean) -> Unit)? = null
+    ) {
+        viewLifecycleOwner.lifecycleScope.launch {
+            val ok = UdpClientManager.sendCommand(json, setOf(Nodo.B))
+            alTerminar?.invoke(ok)
+            val ctx = context ?: return@launch
+            if (ok) {
+                mensajeExito?.let { Toast.makeText(ctx, it, Toast.LENGTH_SHORT).show() }
+            } else {
+                Toast.makeText(
+                    ctx,
+                    "No respondió ${Nodo.B.nombre}. Revisa la conexión Wi-Fi",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
+    private fun reenviarConfiguracionGuardada() {
+        val prefs = requireContext().getSharedPreferences("BikeLightPrefs", Context.MODE_PRIVATE)
+        val frecuencia = prefs.getString("buzzer_frecuencia", null)
+        val duracion = prefs.getString("buzzer_duracion", null)
+
+        if (frecuencia != null && duracion != null) {
+            enviarAlEsp32(
+                """{"buzzer_activo":true,"buzzer_frec":${frecuenciaEnHz(frecuencia)},"buzzer_dur":${duracionEnMs(duracion)}}""",
+                null
+            )
+        }
+    }
+
+    // ---------- Conversión de las opciones de los spinners ----------
+
+    // "Estándar (2000 Hz)" -> 2000
+    private fun frecuenciaEnHz(texto: String): Int =
+        Regex("""\((\d+)\s*Hz\)""").find(texto)?.groupValues?.get(1)?.toIntOrNull()
+            ?: FRECUENCIA_POR_DEFECTO_HZ
+
+    // "Advertencia (0.50s)" -> 500
+    private fun duracionEnMs(texto: String): Int = when {
+        texto.contains("0.05s") -> 50
+        texto.contains("0.10s") -> 100
+        texto.contains("0.25s") -> 250
+        texto.contains("0.50s") -> 500
+        texto.contains("1.00s") -> 1000
+        else -> 200
+    }
+
+    // ---------- Preferencias ----------
+
     // lee las preferencias almacenadas
     private fun cargarConfiguracionBuzzer() {
         val prefs = requireContext().getSharedPreferences("BikeLightPrefs", Context.MODE_PRIVATE)
@@ -114,31 +188,39 @@ class BuzzerFragment : Fragment() {
             if (index >= 0) binding.spinnerDuracion.setSelection(index)
         }
     }
-    // guarda los valores del buzzer
-    private fun guardarConfiguracionBuzzer() {
-        val frecSeleccionada = binding.spinnerFrecuencia.selectedItem.toString()
-        val durSeleccionada = binding.spinnerDuracion.selectedItem.toString()
 
+    // aplica la configuración en el ESP32 y, si confirmó, la guarda
+    private fun guardarConfiguracionBuzzer() {
         // valida que se seleccione una opción válida
         if (binding.spinnerFrecuencia.selectedItemPosition == 0 || binding.spinnerDuracion.selectedItemPosition == 0) {
             Toast.makeText(requireContext(), "Por favor selecciona una frecuencia y una duración válidas", Toast.LENGTH_SHORT).show()
             return
         }
 
-        val prefs = requireContext().getSharedPreferences("BikeLightPrefs", Context.MODE_PRIVATE)
-        prefs.edit().apply {
-            putString("buzzer_frecuencia", frecSeleccionada)
-            putString("buzzer_duracion", durSeleccionada)
-            apply()
+        val frecSeleccionada = binding.spinnerFrecuencia.selectedItem.toString()
+        val durSeleccionada = binding.spinnerDuracion.selectedItem.toString()
+        val frecuenciaHz = frecuenciaEnHz(frecSeleccionada)
+        val duracionMs = duracionEnMs(durSeleccionada)
+
+        enviarAlEsp32(
+            """{"buzzer_activo":true,"buzzer_frec":$frecuenciaHz,"buzzer_dur":$duracionMs}""",
+            "Configuración aplicada en el buzzer"
+        ) { ok ->
+            // Solo se guarda localmente si el ESP32 confirmó la configuración
+            if (ok && _binding != null) {
+                requireContext().getSharedPreferences("BikeLightPrefs", Context.MODE_PRIVATE).edit().apply {
+                    putString("buzzer_frecuencia", frecSeleccionada)
+                    putString("buzzer_duracion", durSeleccionada)
+                    apply()
+                }
+                // actualiza tarjeta con datos guardados
+                binding.tvDisplayFrecuencia.text = "Frecuencia: $frecSeleccionada"
+                binding.tvDisplayDuracion.text = "Duración: $durSeleccionada"
+            }
         }
-
-        // actualiza tarjeta con datos guardados
-        binding.tvDisplayFrecuencia.text = "Frecuencia: $frecSeleccionada"
-        binding.tvDisplayDuracion.text = "Duración: $durSeleccionada"
-
-        Toast.makeText(requireContext(), "Configuración guardada exitosamente", Toast.LENGTH_SHORT).show()
     }
-    // emite tono acústico
+
+    // emite tono acústico y vibración en el teléfono (simulación local)
     @RequiresPermission(Manifest.permission.VIBRATE)
     private fun ejecutarSimulacion(duracionMs: Int) {
         toneGenerator?.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, duracionMs)
@@ -161,5 +243,9 @@ class BuzzerFragment : Fragment() {
         toneGenerator?.release()
         toneGenerator = null
         _binding = null
+    }
+
+    companion object {
+        private const val FRECUENCIA_POR_DEFECTO_HZ = 2000
     }
 }
