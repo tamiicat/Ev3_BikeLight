@@ -18,6 +18,7 @@ import com.example.bikelight.data.local.UserProfile
 import com.example.bikelight.databinding.FragmentHomeDashboardBinding
 import com.example.bikelight.security.CryptoUtils
 import com.example.bikelight.ui.devices.SimuladorProximidadFragment
+import com.example.bikelight.ui.devices.UdpClientManager
 import com.example.bikelight.ui.settings.PreferenciasFragment
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.FirebaseDatabase
@@ -32,20 +33,14 @@ class HomeDashboardFragment : Fragment() {
     ) { permissions ->
         val concedido = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
                 permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-        if (concedido) {
-            viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
-                SosSender.dispararAlertaSos(requireContext())
-            }
-        } else {
+        if (!concedido) {
             Toast.makeText(
                 requireContext(),
                 "Sin permiso de GPS se enviará la alerta sin coordenadas exactas",
                 Toast.LENGTH_SHORT
             ).show()
-            viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
-                SosSender.dispararAlertaSos(requireContext())
-            }
         }
+        enviarSos()
     }
 
     private var _binding: FragmentHomeDashboardBinding? = null
@@ -122,9 +117,7 @@ class HomeDashboardFragment : Fragment() {
                             )
                         )
                     } else {
-                        viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
-                            SosSender.dispararAlertaSos(requireContext())
-                        }
+                        enviarSos()
                     }
                 }
                 .setNegativeButton("Cancelar", null)
@@ -132,19 +125,31 @@ class HomeDashboardFragment : Fragment() {
         }
     }
 
+    // Dispara el SOS en segundo plano usando el contexto de aplicación (seguro si el fragment se cierra)
+    private fun enviarSos() {
+        val appContext = context?.applicationContext ?: return
+        viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
+            SosSender.dispararAlertaSos(appContext)
+        }
+    }
+
     /**
-     * Función helper accesible desde este fragmento o subpantallas
-     * para enviar comandos UDP ('1', '0', etc.) directamente al ESP32.
+     * Envía un comando JSON al Arduino (Nodo A) por UDP y espera su confirmación.
+     * Ejemplo: enviarComandoAlEsp32("""{"modo":"manual","estado":true,"color":1,"efecto":1,"brillo":80}""")
+     *
+     * Nota: el Arduino ahora solo procesa JSON; los comandos '1' / '0' en texto plano se ignoran.
      */
-    fun enviarComandoAlEsp32(comando: String) {
-        val mainActivity = activity as? MainActivity
-        mainActivity?.udpClient?.sendCommand(comando)
+    fun enviarComandoAlEsp32(comando: String, alTerminar: ((Boolean) -> Unit)? = null) {
+        viewLifecycleOwner.lifecycleScope.launch {
+            val ok = UdpClientManager.sendCommand(comando)
+            alTerminar?.invoke(ok)
+        }
     }
 
     // Carga los datos del usuario y descifra información clave
     private fun cargarDatosUsuario() {
         val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
-        val contextSafe = context ?: return
+        val contextSafe = context?.applicationContext ?: return
 
         viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
             val db = AppDatabase.getDatabase(contextSafe)
@@ -163,8 +168,11 @@ class HomeDashboardFragment : Fragment() {
                                 emergencyContactPhone = CryptoUtils.decrypt(userFirebase.emergencyContactPhone),
                                 emergencyContactEmail = CryptoUtils.decrypt(userFirebase.emergencyContactEmail)
                             )
-                            viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
-                                db.userDao().saveUserProfile(userDescifrado)
+                            // Se usa GlobalScope-free alternativa: lanzar en el scope de la vista si sigue viva
+                            if (_binding != null) {
+                                viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
+                                    db.userDao().saveUserProfile(userDescifrado)
+                                }
                             }
                         }
                     }

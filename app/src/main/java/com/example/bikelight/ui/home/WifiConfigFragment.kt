@@ -9,6 +9,7 @@ import android.content.pm.PackageManager
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -25,8 +26,9 @@ class WifiConfigFragment : Fragment() {
     private var _binding: FragmentWifiConfigBinding? = null
     private val binding get() = _binding!!
 
-    // ViewModel compartido para reportar estado Wi-Fi
+    // ViewModel compartido: MainActivity publica el estado, este fragment solo lo observa
     private val wifiViewModel: WifiConnectionViewModel by activityViewModels()
+
     private var wifiManager: WifiManager? = null
 
     // Receptor para escuchar el escaneo de redes Wi-Fi
@@ -38,7 +40,6 @@ class WifiConfigFragment : Fragment() {
         }
     }
 
-    // Solicitar permisos de ubicación necesarios para escanear redes disponibles
     private val requestLocationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
@@ -66,13 +67,30 @@ class WifiConfigFragment : Fragment() {
         wifiManager = requireContext().applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
 
         setupListeners()
-        observeWifiState()
+        observarEstadoWifi()
+    }
+
+    // La UI sigue el estado que publica MainActivity (única dueña de la conexión)
+    private fun observarEstadoWifi() {
+        wifiViewModel.wifiStatus.observe(viewLifecycleOwner) { status ->
+            val conectando = status is WifiStatus.Connecting
+            binding.progressBar.visibility = if (conectando) View.VISIBLE else View.GONE
+            binding.btnConnectDevice.isEnabled = !conectando
+        }
     }
 
     override fun onStart() {
         super.onStart()
         val intentFilter = IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION)
-        requireContext().registerReceiver(wifiScanReceiver, intentFilter)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                requireContext().registerReceiver(wifiScanReceiver, intentFilter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                requireContext().registerReceiver(wifiScanReceiver, intentFilter)
+            }
+        } catch (e: Exception) {
+            Log.e("WifiConfig", "Error al registrar receiver", e)
+        }
     }
 
     override fun onStop() {
@@ -98,20 +116,11 @@ class WifiConfigFragment : Fragment() {
             }
             binding.tilDeviceAp.error = null
 
-            connectToEsp32Ap(ssid, pass)
+            // Delegamos en MainActivity: así hay UNA sola solicitud de red activa
+            (requireActivity() as MainActivity).conectarARedEsp32(ssid, pass)
         }
     }
 
-    private fun observeWifiState() {
-        // Sincroniza visualmente la UI si el estado en MainActivity cambia
-        val mainActivity = activity as? MainActivity
-        if (mainActivity?.isEsp32Connected == true) {
-            binding.progressBar.visibility = View.GONE
-            binding.btnConnectDevice.isEnabled = true
-        }
-    }
-
-    // Comprueba permisos de ubicación antes de escanear
     private fun checkPermissionsAndScan() {
         if (ContextCompat.checkSelfPermission(
                 requireContext(),
@@ -134,7 +143,6 @@ class WifiConfigFragment : Fragment() {
         }
     }
 
-    // Actualiza la lista de redes Wi-Fi encontradas
     private fun updateWifiScanList() {
         _binding?.scanProgressBar?.visibility = View.GONE
         if (ContextCompat.checkSelfPermission(
@@ -163,45 +171,11 @@ class WifiConfigFragment : Fragment() {
             b.lvWifiList.visibility = View.VISIBLE
             val adapter = ArrayAdapter(requireContext(), android.R.layout.simple_list_item_1, ssids)
             b.lvWifiList.adapter = adapter
-            // Permite seleccionar una red y autocompletar el SSID
             b.lvWifiList.setOnItemClickListener { _, _, position, _ ->
                 val selectedSsid = ssids[position]
                 b.etDeviceAp.setText(selectedSsid)
                 b.tilDeviceAp.error = null
             }
-        }
-    }
-
-    // Delega la conexión exclusivamente a MainActivity para evitar conflictos de NetworkCallback
-    private fun connectToEsp32Ap(ssid: String, pass: String) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val mainActivity = activity as? MainActivity
-            if (mainActivity == null) {
-                Toast.makeText(requireContext(), "Error interno de actividad", Toast.LENGTH_SHORT).show()
-                return
-            }
-
-            binding.progressBar.visibility = View.VISIBLE
-            binding.btnConnectDevice.isEnabled = false
-            wifiViewModel.updateStatus(WifiStatus.Connecting)
-
-            // Llamada centralizada a MainActivity
-            mainActivity.conectarARedEsp32(ssid, pass)
-
-            // Rehabilitar controles tras lanzar la solicitud al sistema operativo
-            binding.root.postDelayed({
-                _binding?.progressBar?.visibility = View.GONE
-                _binding?.btnConnectDevice?.isEnabled = true
-                if (mainActivity.isEsp32Connected) {
-                    wifiViewModel.updateStatus(WifiStatus.Connected(ssid))
-                }
-            }, 1500)
-        } else {
-            Toast.makeText(
-                requireContext(),
-                "En Android 9 o inferior, conéctate a '$ssid' manualmente desde Ajustes de Wi-Fi",
-                Toast.LENGTH_LONG
-            ).show()
         }
     }
 
