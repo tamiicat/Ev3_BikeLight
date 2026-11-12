@@ -28,7 +28,7 @@
                 android:layout_height="wrap_content"
                 android:layout_gravity="center"
                 android:gravity="center"
-                android:text="Simulación\nProximidad"
+                android:text="Proximidad\nen Tiempo Real"
                 android:textColor="@color/white"
                 android:textStyle="bold"
                 android:textSize="14sp" />
