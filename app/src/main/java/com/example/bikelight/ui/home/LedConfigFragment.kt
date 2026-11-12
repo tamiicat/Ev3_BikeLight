@@ -13,6 +13,7 @@ import androidx.fragment.app.activityViewModels
 import androidx.lifecycle.lifecycleScope
 import com.example.bikelight.R
 import com.example.bikelight.databinding.FragmentLedConfigBinding
+import com.example.bikelight.ui.devices.Nodo
 import com.example.bikelight.ui.devices.UdpClientManager
 import kotlinx.coroutines.launch
 
@@ -121,16 +122,25 @@ class LedConfigFragment : Fragment() {
      * Envía el comando y avisa según la CONFIRMACIÓN real del Arduino.
      * Si mensajeExito es null, solo avisa cuando falla.
      */
-    private fun enviarComando(json: String, mensajeExito: String?, alTerminar: ((Boolean) -> Unit)? = null) {
+    private fun enviarComando(
+        json: String,
+        mensajeExito: String?,
+        nodos: Set<Nodo> = Nodo.todos,
+        alTerminar: ((Set<Nodo>) -> Unit)? = null
+    ) {
         viewLifecycleOwner.lifecycleScope.launch {
-            val ok = UdpClientManager.sendCommand(json)
-            alTerminar?.invoke(ok)
+            val confirmados = UdpClientManager.enviar(json, nodos)
+            alTerminar?.invoke(confirmados)
             val ctx = context ?: return@launch
+
+            val faltantes = nodos - confirmados
             when {
-                ok && mensajeExito != null ->
+                faltantes.isEmpty() && mensajeExito != null ->
                     Toast.makeText(ctx, mensajeExito, Toast.LENGTH_SHORT).show()
-                !ok ->
-                    Toast.makeText(ctx, "El dispositivo no respondió. Revisa la conexión Wi-Fi con la red BIKELIGHT", Toast.LENGTH_LONG).show()
+                faltantes.isNotEmpty() -> {
+                    val detalle = faltantes.joinToString(", ") { it.nombre }
+                    Toast.makeText(ctx, "No respondió: $detalle. Revisa la conexión Wi-Fi", Toast.LENGTH_LONG).show()
+                }
             }
         }
     }
@@ -191,9 +201,9 @@ class LedConfigFragment : Fragment() {
         enviarComando(
             """{"modo":"auto","color":$colorIdx,"efecto":$efectoIdx,"brillo":$brilloSeleccionado}""",
             "Configuración aplicada en el dispositivo"
-        ) { ok ->
-            // Solo se guarda localmente si el Arduino confirmó la configuración
-            if (ok && _binding != null) {
+        ) { confirmados ->
+            // Se guarda localmente si al menos un nodo confirmó la configuración
+            if (confirmados.isNotEmpty() && _binding != null) {
                 requireContext().getSharedPreferences("BikeLightPrefs", Context.MODE_PRIVATE).edit().apply {
                     putString("led_color", colorSeleccionado)
                     putString("led_efecto", efectoSeleccionado)
