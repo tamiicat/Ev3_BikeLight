@@ -19,15 +19,14 @@ import com.example.bikelight.databinding.FragmentHomeDashboardBinding
 import com.example.bikelight.security.CryptoUtils
 import com.example.bikelight.ui.devices.SimuladorProximidadFragment
 import com.example.bikelight.ui.settings.PreferenciasFragment
-import com.example.bikelight.ui.home.SosSender
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.FirebaseDatabase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 class HomeDashboardFragment : Fragment() {
-    // registra resiltado de permisos de ubicación GPS para SOS
+
+    // Registra el resultado de permisos de ubicación GPS para SOS
     private val locationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
@@ -65,7 +64,7 @@ class HomeDashboardFragment : Fragment() {
 
         cargarDatosUsuario()
 
-        // configura la navegación de cada tarjeta
+        // Configuración de la navegación de cada tarjeta del Dashboard
         binding.cardSimuladorProximidad.setOnClickListener {
             mainActivity?.cargarFragment(SimuladorProximidadFragment(), "Proximidad del Sensor")
         }
@@ -98,7 +97,7 @@ class HomeDashboardFragment : Fragment() {
             mainActivity?.cargarFragment(PreferenciasFragment(), "Preferencias")
         }
 
-        // mensaje sos
+        // Mensaje de alerta SOS de emergencia
         binding.cardContactoEmergencia.setOnClickListener {
             AlertDialog.Builder(requireContext())
                 .setTitle("¡ALERTA DE EMERGENCIA!")
@@ -113,7 +112,8 @@ class HomeDashboardFragment : Fragment() {
                         requireContext(),
                         Manifest.permission.ACCESS_COARSE_LOCATION
                     ) == PackageManager.PERMISSION_GRANTED
-                    // solicita permisos de ubicación
+
+                    // Solicita permisos de ubicación si no están otorgados
                     if (!tienePermisoFine && !tienePermisoCoarse) {
                         locationPermissionLauncher.launch(
                             arrayOf(
@@ -131,7 +131,17 @@ class HomeDashboardFragment : Fragment() {
                 .show()
         }
     }
-    // carga los datos del usuario y descifra información clave
+
+    /**
+     * Función helper accesible desde este fragmento o subpantallas
+     * para enviar comandos UDP ('1', '0', etc.) directamente al ESP32.
+     */
+    fun enviarComandoAlEsp32(comando: String) {
+        val mainActivity = activity as? MainActivity
+        mainActivity?.udpClient?.sendCommand(comando)
+    }
+
+    // Carga los datos del usuario y descifra información clave
     private fun cargarDatosUsuario() {
         val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
         val contextSafe = context ?: return
@@ -140,7 +150,7 @@ class HomeDashboardFragment : Fragment() {
             val db = AppDatabase.getDatabase(contextSafe)
             val userLocal = db.userDao().getUserProfile(uid)
 
-            // si no está en local, sincronizar desde Firebase
+            // Si no está en almacenamiento local, sincronizar desde Firebase
             if (userLocal == null) {
                 FirebaseDatabase.getInstance().reference.child("users").child(uid).get()
                     .addOnSuccessListener { snapshot ->
