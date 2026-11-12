@@ -8,6 +8,8 @@ import android.net.NetworkRequest
 import android.net.wifi.WifiNetworkSpecifier
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.widget.Toast
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
@@ -40,8 +42,23 @@ class MainActivity : AppCompatActivity() {
     var connectedSsid: String = ""
         private set
 
+    // Variables de control para reconexión automática
+    private var targetSsid: String = "RED BIKELIGHT"
+    private var targetPassword: String = "75648955!"
+    private var autoReconnectEnabled: Boolean = true
+
     private lateinit var connectivityManager: ConnectivityManager
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    // Temporizador para reintentar conexión cada 5 segundos al perder señal
+    private val reconnectHandler = Handler(Looper.getMainLooper())
+    private val reconnectRunnable = object : Runnable {
+        override fun run() {
+            if (autoReconnectEnabled && !isEsp32Connected) {
+                conectarARedEsp32(targetSsid, targetPassword, esReintento = true)
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         val prefs = getSharedPreferences("BikeLightPrefs", MODE_PRIVATE)
@@ -55,8 +72,8 @@ class MainActivity : AppCompatActivity() {
         udpClient = UdpClient(esp32Ip, puertoUdp)
         connectivityManager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
 
-        // Intento inicial automático con el nuevo SSID
-        conectarARedEsp32("RED BIKELIGHT", "75648955!")
+        // Intento inicial automático con el SSID configurado
+        conectarARedEsp32(targetSsid, targetPassword)
 
         setupBottomNavigation()
 
@@ -66,22 +83,31 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Inicia o reinicia limpiamente la conexión hacia el Access Point del ESP32
+     * Inicia o reintenta limpiamente la conexión hacia el Access Point del ESP32
      * y notifica en tiempo real al WifiConnectionViewModel.
      */
-    fun conectarARedEsp32(ssid: String = "RED BIKELIGHT", password: String = "75648955!") {
-        liberarRedActual()
+    fun conectarARedEsp32(
+        ssid: String = "RED BIKELIGHT",
+        password: String = "75648955!",
+        esReintento: Boolean = false
+    ) {
+        // Cancelar cualquier reintento en cola antes de lanzar uno nuevo
+        reconnectHandler.removeCallbacks(reconnectRunnable)
 
-        val cleanSsid = ssid.trim()
+        targetSsid = ssid.trim()
+        targetPassword = password
+        autoReconnectEnabled = true
+
+        liberarRedActual(detenerReintentos = false)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             wifiViewModel.updateStatus(WifiStatus.Connecting)
 
             val specifierBuilder = WifiNetworkSpecifier.Builder()
-                .setSsid(cleanSsid)
+                .setSsid(targetSsid)
 
-            if (password.isNotEmpty()) {
-                specifierBuilder.setWpa2Passphrase(password)
+            if (targetPassword.isNotEmpty()) {
+                specifierBuilder.setWpa2Passphrase(targetPassword)
             }
 
             val networkRequest = NetworkRequest.Builder()
@@ -93,15 +119,16 @@ class MainActivity : AppCompatActivity() {
             networkCallback = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
                     super.onAvailable(network)
+                    reconnectHandler.removeCallbacks(reconnectRunnable)
+
                     connectivityManager.bindProcessToNetwork(network)
                     udpClient?.resetSocket()
                     isEsp32Connected = true
-                    connectedSsid = cleanSsid
+                    connectedSsid = targetSsid
 
                     runOnUiThread {
-                        // Notifica a EstadoWifiFragment y WifiConfigFragment que ya está conectado
-                        wifiViewModel.updateStatus(WifiStatus.Connected(cleanSsid))
-                        Toast.makeText(this@MainActivity, "Conectado a $cleanSsid", Toast.LENGTH_SHORT).show()
+                        wifiViewModel.updateStatus(WifiStatus.Connected(targetSsid))
+                        Toast.makeText(this@MainActivity, "Conectado a $targetSsid", Toast.LENGTH_SHORT).show()
                     }
                 }
 
@@ -114,8 +141,15 @@ class MainActivity : AppCompatActivity() {
 
                     runOnUiThread {
                         wifiViewModel.updateStatus(WifiStatus.Disconnected)
-                        Toast.makeText(this@MainActivity, "Conexión perdida con $cleanSsid", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            this@MainActivity,
+                            "Conexión perdida con $targetSsid. Reconectando...",
+                            Toast.LENGTH_SHORT
+                        ).show()
                     }
+
+                    // Programar reconexión automática en 5 segundos
+                    programarReintento()
                 }
 
                 override fun onUnavailable() {
@@ -124,13 +158,22 @@ class MainActivity : AppCompatActivity() {
                     connectedSsid = ""
 
                     runOnUiThread {
-                        wifiViewModel.updateStatus(WifiStatus.Error("Conexión rechazada o red '$cleanSsid' no encontrada"))
-                        Toast.makeText(
-                            this@MainActivity,
-                            "Conexión rechazada o red '$cleanSsid' no encontrada",
-                            Toast.LENGTH_LONG
-                        ).show()
+                        if (esReintento) {
+                            wifiViewModel.updateStatus(WifiStatus.Disconnected)
+                        } else {
+                            wifiViewModel.updateStatus(
+                                WifiStatus.Error("Conexión rechazada o red '$targetSsid' no encontrada")
+                            )
+                            Toast.makeText(
+                                this@MainActivity,
+                                "Conexión rechazada o red '$targetSsid' no encontrada. Reintentando...",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
                     }
+
+                    // Si el ESP32 aún no vuelve a estar en rango, reintentar en 5 segundos
+                    programarReintento()
                 }
             }
 
@@ -140,17 +183,29 @@ class MainActivity : AppCompatActivity() {
                 e.printStackTrace()
                 wifiViewModel.updateStatus(WifiStatus.Error("Error al solicitar red Wi-Fi"))
                 Toast.makeText(this, "Error al solicitar red Wi-Fi: ${e.message}", Toast.LENGTH_SHORT).show()
+                programarReintento()
             }
         } else {
             Toast.makeText(
                 this,
-                "Conéctate manualmente a '$cleanSsid' desde los Ajustes de Wi-Fi del teléfono",
+                "Conéctate manualmente a '$targetSsid' desde los Ajustes de Wi-Fi del teléfono",
                 Toast.LENGTH_LONG
             ).show()
         }
     }
 
-    fun liberarRedActual() {
+    private fun programarReintento() {
+        if (autoReconnectEnabled && !isEsp32Connected) {
+            reconnectHandler.removeCallbacks(reconnectRunnable)
+            reconnectHandler.postDelayed(reconnectRunnable, 5000L)
+        }
+    }
+
+    fun liberarRedActual(detenerReintentos: Boolean = true) {
+        if (detenerReintentos) {
+            autoReconnectEnabled = false
+            reconnectHandler.removeCallbacks(reconnectRunnable)
+        }
         networkCallback?.let {
             try {
                 connectivityManager.bindProcessToNetwork(null)
@@ -196,7 +251,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        liberarRedActual()
+        liberarRedActual(detenerReintentos = true)
         udpClient?.close()
     }
 }
