@@ -17,6 +17,7 @@ import com.example.bikelight.data.local.AppDatabase
 import com.example.bikelight.data.local.UserProfile
 import com.example.bikelight.databinding.FragmentHomeDashboardBinding
 import com.example.bikelight.security.CryptoUtils
+import com.example.bikelight.ui.devices.SensorProximidad
 import com.example.bikelight.ui.devices.SimuladorProximidadFragment
 import com.example.bikelight.ui.devices.UdpClientManager
 import com.example.bikelight.ui.settings.PreferenciasFragment
@@ -27,7 +28,6 @@ import kotlinx.coroutines.launch
 
 class HomeDashboardFragment : Fragment() {
 
-    // Registra el resultado de permisos de ubicación GPS para SOS
     private val locationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
@@ -59,7 +59,6 @@ class HomeDashboardFragment : Fragment() {
 
         cargarDatosUsuario()
 
-        // Configuración de la navegación de cada tarjeta del Dashboard
         binding.cardSimuladorProximidad.setOnClickListener {
             mainActivity?.cargarFragment(SimuladorProximidadFragment(), "Proximidad del Sensor")
         }
@@ -92,7 +91,6 @@ class HomeDashboardFragment : Fragment() {
             mainActivity?.cargarFragment(PreferenciasFragment(), "Preferencias")
         }
 
-        // Mensaje de alerta SOS de emergencia
         binding.cardContactoEmergencia.setOnClickListener {
             AlertDialog.Builder(requireContext())
                 .setTitle("¡ALERTA DE EMERGENCIA!")
@@ -108,7 +106,6 @@ class HomeDashboardFragment : Fragment() {
                         Manifest.permission.ACCESS_COARSE_LOCATION
                     ) == PackageManager.PERMISSION_GRANTED
 
-                    // Solicita permisos de ubicación si no están otorgados
                     if (!tienePermisoFine && !tienePermisoCoarse) {
                         locationPermissionLauncher.launch(
                             arrayOf(
@@ -125,7 +122,6 @@ class HomeDashboardFragment : Fragment() {
         }
     }
 
-    // Dispara el SOS en segundo plano usando el contexto de aplicación (seguro si el fragment se cierra)
     private fun enviarSos() {
         val appContext = context?.applicationContext ?: return
         viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
@@ -133,12 +129,6 @@ class HomeDashboardFragment : Fragment() {
         }
     }
 
-    /**
-     * Envía un comando JSON al Arduino (Nodo A) por UDP y espera su confirmación.
-     * Ejemplo: enviarComandoAlEsp32("""{"modo":"manual","estado":true,"color":1,"efecto":1,"brillo":80}""")
-     *
-     * Nota: el Arduino ahora solo procesa JSON; los comandos '1' / '0' en texto plano se ignoran.
-     */
     fun enviarComandoAlEsp32(comando: String, alTerminar: ((Boolean) -> Unit)? = null) {
         viewLifecycleOwner.lifecycleScope.launch {
             val ok = UdpClientManager.sendCommand(comando)
@@ -146,21 +136,25 @@ class HomeDashboardFragment : Fragment() {
         }
     }
 
-    // Carga los datos del usuario y descifra información clave
     private fun cargarDatosUsuario() {
         val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
-        val contextSafe = context?.applicationContext ?: return
+        val appContext = context?.applicationContext ?: return
 
         viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
-            val db = AppDatabase.getDatabase(contextSafe)
+            val db = AppDatabase.getDatabase(appContext)
             val userLocal = db.userDao().getUserProfile(uid)
 
-            // Si no está en almacenamiento local, sincronizar desde Firebase
-            if (userLocal == null) {
+            if (userLocal != null) {
+                ModosProximidad.guardarModo(appContext, userLocal.proximityMode)
+                SensorProximidad.fijarRango(ModosProximidad.rangoCm(userLocal.proximityMode))
+            } else {
                 FirebaseDatabase.getInstance().reference.child("users").child(uid).get()
                     .addOnSuccessListener { snapshot ->
                         val userFirebase = snapshot.getValue(UserProfile::class.java)
                         if (userFirebase != null) {
+                            ModosProximidad.guardarModo(appContext, userFirebase.proximityMode)
+                            SensorProximidad.fijarRango(ModosProximidad.rangoCm(userFirebase.proximityMode))
+
                             val userDescifrado = userFirebase.copy(
                                 fullName = CryptoUtils.decrypt(userFirebase.fullName),
                                 phone = CryptoUtils.decrypt(userFirebase.phone),
@@ -168,7 +162,6 @@ class HomeDashboardFragment : Fragment() {
                                 emergencyContactPhone = CryptoUtils.decrypt(userFirebase.emergencyContactPhone),
                                 emergencyContactEmail = CryptoUtils.decrypt(userFirebase.emergencyContactEmail)
                             )
-                            // Se usa GlobalScope-free alternativa: lanzar en el scope de la vista si sigue viva
                             if (_binding != null) {
                                 viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
                                     db.userDao().saveUserProfile(userDescifrado)
