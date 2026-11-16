@@ -12,12 +12,13 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.example.bikelight.R
+import com.example.bikelight.ui.home.ModosProximidad
 import com.example.bikelight.databinding.FragmentSimuladorProximidadBinding
 import kotlinx.coroutines.launch
 
 /**
  * Muestra en tiempo real la distancia medida por el sensor ultrasónico del Arduino (Nodo A).
- * Ya no genera valores simulados: si no hay conexión o el Arduino no responde, lo indica.
+ * El rango de detección depende del modo de proximidad activo (Carretera, Ciclovía, Ciudad, Nocturno).
  */
 class SimuladorProximidadFragment : Fragment() {
     private var _binding: FragmentSimuladorProximidadBinding? = null
@@ -26,10 +27,14 @@ class SimuladorProximidadFragment : Fragment() {
     // métrico o imperial sincronizado con preferencias de unidades de medidas
     private var unidadMedida: String = "METRICO"
 
+    // modo de proximidad activo y su rango (cm)
+    private var modoActivo: String = ModosProximidad.MODO_POR_DEFECTO
+    private var rangoModoCm: Int = ModosProximidad.rangoCm(ModosProximidad.MODO_POR_DEFECTO)
+
     // true = la pantalla se actualiza con cada lectura; false = pantalla en pausa
     private var monitoreoActivo: Boolean = true
 
-    // última lectura recibida (para repintar al cambiar de unidad)
+    // última lectura recibida (para repintar al cambiar de unidad o de modo)
     private var ultimaLectura: LecturaProximidad? = null
 
     override fun onCreateView(
@@ -41,24 +46,39 @@ class SimuladorProximidadFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        // carga las preferencias de unidades
-        cargarUnidadPreferida()
         configurarListeners()
         mostrarSinSenal()
         iniciarLecturaEnTiempoReal()
+    }
+
+    // al volver a la pantalla (por ejemplo desde "Modo proximidad") se relee modo y unidad
+    override fun onResume() {
+        super.onResume()
+        cargarUnidadPreferida()
+        cargarModoActivo()
+        ultimaLectura?.let { if (monitoreoActivo) renderizarLectura(it) }
     }
 
     // lee las preferencias de unidades de medidas
     private fun cargarUnidadPreferida() {
         val prefs = requireContext().getSharedPreferences("BikeLightPrefs", Context.MODE_PRIVATE)
         unidadMedida = prefs.getString("unidad_medida", "METRICO") ?: "METRICO"
-        actualizarTextoUnidad()
+        actualizarTextoInfo()
     }
 
-    // actualiza texto informativo
-    private fun actualizarTextoUnidad() {
-        val texto = if (unidadMedida == "METRICO") "Métrico (cm, m)" else "Imperial (in, ft)"
-        binding.tvUnidadConfigurada.text = "Unidad activa: $texto"
+    // lee el modo de proximidad elegido y el rango que le corresponde
+    private fun cargarModoActivo() {
+        modoActivo = ModosProximidad.modoGuardado(requireContext())
+        rangoModoCm = ModosProximidad.rangoCm(modoActivo)
+        SensorProximidad.establecerRango(rangoModoCm)   // la suscripción al Arduino lleva este rango
+        actualizarTextoInfo()
+    }
+
+    // texto informativo: modo, rango y unidad
+    private fun actualizarTextoInfo() {
+        val unidad = if (unidadMedida == "METRICO") "Métrico (cm, m)" else "Imperial (in, ft)"
+        binding.tvUnidadConfigurada.text =
+            "Modo: $modoActivo · Rango: ${formatearDistancia(rangoModoCm)}\nUnidad activa: $unidad"
     }
 
     // configura los eventos de clic
@@ -75,7 +95,7 @@ class SimuladorProximidadFragment : Fragment() {
             requireContext().getSharedPreferences("BikeLightPrefs", Context.MODE_PRIVATE)
                 .edit().putString("unidad_medida", unidadMedida).apply()
 
-            actualizarTextoUnidad()
+            actualizarTextoInfo()
             ultimaLectura?.let { renderizarLectura(it) }
         }
     }
@@ -91,6 +111,17 @@ class SimuladorProximidadFragment : Fragment() {
                     if (lectura == null) mostrarSinSenal() else renderizarLectura(lectura)
                 }
             }
+        }
+    }
+
+    // formatea una distancia en cm según la unidad elegida
+    private fun formatearDistancia(cm: Int): String {
+        val metros = cm / 100f
+        return if (unidadMedida == "METRICO") {
+            if (cm < 100) "$cm cm" else String.format("%.2f m", metros)
+        } else {
+            val totalPies = metros * 3.28084f
+            if (totalPies < 1.0f) "${(totalPies * 12).toInt()} in" else String.format("%.2f ft", totalPies)
         }
     }
 
@@ -117,36 +148,29 @@ class SimuladorProximidadFragment : Fragment() {
 
         val cm = lectura.cm
 
-        // % de cercanía para la barra de progreso (según el alcance real del sensor)
-        val factorCercania = ((1.0f - (cm.toFloat() / ALCANCE_MAX_CM)).coerceIn(0f, 1f) * 100).toInt()
+        // Rango efectivo: el umbral que el Arduino está usando de verdad (viaja en cada lectura).
+        // Si no llegara, se usa el del modo elegido en la app.
+        val umbralCm = if (lectura.umbralCm > 0) lectura.umbralCm else rangoModoCm
+
+        // Zona de precaución: desde el umbral hasta el doble del umbral
+        val limitePrecaucionCm = umbralCm * FACTOR_PRECAUCION
+
+        // % de cercanía para la barra: 100 % pegado al sensor, 0 % al salir de la zona de precaución
+        val factorCercania = ((1.0f - (cm.toFloat() / limitePrecaucionCm)).coerceIn(0f, 1f) * 100).toInt()
         binding.pbProximidad.progress = factorCercania
 
-        // conversión y formateo según unidades
-        val metros = cm / 100f
-        val textoDistancia = if (unidadMedida == "METRICO") {
-            if (cm < 100) "$cm cm" else String.format("%.2f m", metros)
-        } else {
-            // conversión a pies y pulgadas
-            val totalPies = metros * 3.28084f
-            if (totalPies < 1.0f) {
-                val pulgadas = (totalPies * 12).toInt()
-                "$pulgadas in"
-            } else {
-                String.format("%.2f ft", totalPies)
-            }
-        }
-        binding.tvDistanciaValor.text = textoDistancia
+        binding.tvDistanciaValor.text = formatearDistancia(cm)
 
         // estados de advertencia y colores del tema
         when {
-            // dentro del umbral del Arduino: es cuando el dispositivo activa LEDs y buzzer
-            cm <= lectura.umbralCm -> {
+            // dentro del umbral del Arduino (mismo criterio "<" que usa el firmware): activa LEDs y buzzer
+            cm < umbralCm -> {
                 binding.tvEstadoAlerta.text = "¡ALERTA CRÍTICA: Objeto muy cercano!"
                 binding.tvEstadoAlerta.setTextColor(Color.parseColor("#FF5252")) // Rojo advertencia
                 binding.cardDisplaySensor.strokeColor = ContextCompat.getColor(requireContext(), R.color.bikelight_sos)
                 binding.cardDisplaySensor.strokeWidth = 4
             }
-            cm < PRECAUCION_CM -> {
+            cm < limitePrecaucionCm -> {
                 binding.tvEstadoAlerta.text = "Precaución: Objeto detectado"
                 binding.tvEstadoAlerta.setTextColor(Color.parseColor("#FFB74D")) // Naranja precaución
                 binding.cardDisplaySensor.strokeWidth = 0
@@ -165,10 +189,7 @@ class SimuladorProximidadFragment : Fragment() {
     }
 
     companion object {
-        // Alcance útil del sensor del Arduino (pulseIn con timeout de 15 ms ≈ 2.5 m)
-        private const val ALCANCE_MAX_CM = 250f
-
-        // Por debajo de esta distancia (y por encima del umbral del Arduino) se muestra "Precaución"
-        private const val PRECAUCION_CM = 100
+        // La zona de "Precaución" llega hasta este múltiplo del umbral del modo (ej.: Nocturno 40 cm -> 80 cm)
+        private const val FACTOR_PRECAUCION = 2
     }
 }

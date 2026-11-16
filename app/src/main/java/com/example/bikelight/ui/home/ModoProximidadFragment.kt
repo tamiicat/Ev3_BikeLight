@@ -9,6 +9,7 @@ import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
 import com.example.bikelight.data.local.AppDatabase
 import com.example.bikelight.databinding.FragmentModoProximidadBinding
+import com.example.bikelight.ui.devices.SensorProximidad
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.FirebaseDatabase
 import kotlinx.coroutines.Dispatchers
@@ -33,25 +34,41 @@ class ModoProximidadFragment : Fragment() {
         binding.cardModoCiudad.setOnClickListener { cambiarModo("Ciudad") }
         binding.cardModoNocturno.setOnClickListener { cambiarModo("Nocturno") }
     }
-    // consulta el modo acutal almacenado en Room y lo muestra en la parte superior
+
+    // consulta el modo actual almacenado en Room y lo muestra en la parte superior
     private fun cargarModoActual() {
         val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
-        val db = AppDatabase.getDatabase(requireContext())
+        val appContext = requireContext().applicationContext
+        val db = AppDatabase.getDatabase(appContext)
 
         lifecycleScope.launch(Dispatchers.IO) {
             val user = db.userDao().getUserProfile(uid)
+            val modo = user?.proximityMode ?: ModosProximidad.MODO_POR_DEFECTO
+
+            // deja la copia local alineada con Room (el simulador lee de aquí)
+            ModosProximidad.guardarModo(appContext, modo)
+
             withContext(Dispatchers.Main) {
-                val modo = user?.proximityMode ?: "Ciudad"
-                binding.tvModoSeleccionado.text = "Modo activo: $modo"
+                _binding?.tvModoSeleccionado?.text = "Modo activo: $modo"
             }
         }
     }
+
     // cambia y guarda el nuevo modo seleccionado en bd local y realtime database
     private fun cambiarModo(nuevoModo: String) {
         val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
-        val db = AppDatabase.getDatabase(requireContext())
+        val appContext = requireContext().applicationContext
+        val db = AppDatabase.getDatabase(appContext)
+        val rangoCm = ModosProximidad.rangoCm(nuevoModo)
 
         binding.tvModoSeleccionado.text = "Modo activo: $nuevoModo"
+
+        // copia local inmediata: el simulador y el envío al Arduino leen de aquí
+        ModosProximidad.guardarModo(appContext, nuevoModo)
+
+        // envía el nuevo rango al Arduino (Nodo A) de inmediato y lo deja memorizado
+        // para las próximas suscripciones
+        SensorProximidad.fijarRango(rangoCm)
 
         lifecycleScope.launch(Dispatchers.IO) {
             // guardar localmente
@@ -62,7 +79,11 @@ class ModoProximidadFragment : Fragment() {
                 .child("proximityMode").setValue(nuevoModo)
 
             withContext(Dispatchers.Main) {
-                Toast.makeText(requireContext(), "Modo de proximidad cambiado a: $nuevoModo", Toast.LENGTH_SHORT).show()
+                Toast.makeText(
+                    appContext,
+                    "Modo $nuevoModo activado (rango: $rangoCm cm)",
+                    Toast.LENGTH_SHORT
+                ).show()
             }
         }
     }

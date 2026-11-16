@@ -4,6 +4,9 @@ import android.net.Network
 import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -31,7 +34,78 @@ object SensorProximidad {
     private const val SIN_SENAL_MS = 1500L             // sin paquetes durante este tiempo = sin señal
     private const val TIMEOUT_RECEPCION_MS = 300
 
-    private const val SUSCRIPCION = """{"suscribir":true,"nodo":"A"}"""
+    private const val INTENTOS_UMBRAL = 3              // reintentos al enviar el rango (UDP no garantiza entrega)
+    private const val ESPERA_ACK_MS = 400
+
+    // Rango de detección (cm) del modo de proximidad activo. 0 = aún no definido.
+    @Volatile private var rangoCm: Int = 0
+
+    // Alcance propio para que el envío no se cancele si el usuario sale de la pantalla
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    // La suscripción lleva el rango: si el Arduino se reinicia, lo recupera en ≤ 2 s
+    private fun suscripcion(): String {
+        val r = rangoCm
+        return if (r > 0) """{"suscribir":true,"nodo":"A","umbral":$r}"""
+        else """{"suscribir":true,"nodo":"A"}"""
+    }
+
+    /** Solo memoriza el rango; se enviará en la próxima suscripción. */
+    fun establecerRango(cm: Int) {
+        rangoCm = cm
+    }
+
+    /**
+     * Memoriza el rango y se lo envía de inmediato al Arduino (Nodo A),
+     * aunque la pantalla del simulador no esté abierta. Llamar al cambiar de modo
+     * y también cuando la app se conecte a la red del ESP32.
+     */
+    fun fijarRango(cm: Int) {
+        rangoCm = cm
+        scope.launch { enviarRango(cm) }
+    }
+
+    // Envía {"nodo":"A","umbral":cm} y espera el ACK del Arduino ({"ok":true,"nodo":"A"})
+    private fun enviarRango(cm: Int): Boolean {
+        val red = UdpClientManager.esp32Network
+        if (red == null) {
+            Log.w(TAG, "Sin red del ESP32: el rango se enviará con la próxima suscripción")
+            return false
+        }
+        var socket: DatagramSocket? = null
+        return try {
+            socket = DatagramSocket().also {
+                red.bindSocket(it)
+                it.broadcast = true
+                it.soTimeout = ESPERA_ACK_MS
+            }
+            val datos = """{"nodo":"A","umbral":$cm}""".toByteArray(Charsets.UTF_8)
+            val destino = InetAddress.getByName(UdpClientManager.targetIp)
+            val buffer = ByteArray(256)
+
+            for (intento in 1..INTENTOS_UMBRAL) {
+                socket.send(DatagramPacket(datos, datos.size, destino, PUERTO_ARDUINO))
+                try {
+                    val paquete = DatagramPacket(buffer, buffer.size)
+                    socket.receive(paquete)
+                    val obj = JSONObject(String(paquete.data, 0, paquete.length, Charsets.UTF_8))
+                    if (obj.optBoolean("ok") && obj.optString("nodo") == "A") {
+                        Log.d(TAG, "Arduino confirmó rango = $cm cm (intento $intento)")
+                        return true
+                    }
+                } catch (e: SocketTimeoutException) {
+                    // sin ACK: se reintenta
+                }
+            }
+            Log.w(TAG, "El Arduino no confirmó el rango $cm cm")
+            false
+        } catch (e: Exception) {
+            Log.e(TAG, "Error enviando el rango", e)
+            false
+        } finally {
+            socket?.close()
+        }
+    }
 
     /**
      * Flujo de lecturas en tiempo real mientras se esté recolectando.
@@ -78,7 +152,7 @@ object SensorProximidad {
                         // Renovar la suscripción (el Arduino responde a la IP/puerto de este socket)
                         val ahora = SystemClock.elapsedRealtime()
                         if (ahora - ultimaSuscripcion >= RENOVAR_SUSCRIPCION_MS) {
-                            val datos = SUSCRIPCION.toByteArray(Charsets.UTF_8)
+                            val datos = suscripcion().toByteArray(Charsets.UTF_8)
                             s.send(
                                 DatagramPacket(
                                     datos, datos.size,
