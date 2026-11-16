@@ -77,6 +77,9 @@ dependencies {
     // CONEXIÓN WIFI
     implementation("androidx.fragment:fragment-ktx:1.8.4")
 
+    // WORK MANAGER (Sincronización Offline-First)
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
+
     // PRUEBAS Y TESTING
     // framework estándar para ejecutar pruebas unitarias locales
     testImplementation(libs.junit)
