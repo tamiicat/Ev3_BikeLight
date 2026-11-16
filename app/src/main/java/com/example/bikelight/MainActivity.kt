@@ -328,7 +328,7 @@ class MainActivity : AppCompatActivity() {
                     true
                 }
                 R.id.nav_home -> {
-                    cargarFragment(HomeDashboardFragment(), "RED BIKELIGHT")
+                    cargarFragment(HomeDashboardFragment(), "BIKELIGHT")
                     true
                 }
                 R.id.nav_logout -> {
