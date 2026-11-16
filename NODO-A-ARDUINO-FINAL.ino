@@ -12,7 +12,9 @@ IPAddress ip_ESP32(192, 168, 4, 1);
 #define LED_PIN 5
 #define NUM_LEDS 10
 #define PASO_GRADUAL_MS 120   // Velocidad del efecto gradual izquierda/derecha (ms por LED)
-#define DISTANCIA_UMBRAL 10
+#define DISTANCIA_UMBRAL_DEFECTO 10   // cm, hasta que la App elija un modo de proximidad
+#define UMBRAL_MIN 5                  // cm
+#define UMBRAL_MAX 200                // cm (el pulseIn con timeout de 15 ms alcanza ~2.5 m)
 #define PUERTO_UDP 4210
 #define NUM_MEDICIONES 3
 #define INTERVALO_MEDICION_MS 150
@@ -29,6 +31,10 @@ bool presencia = false;
 IPAddress cliente_ip;
 uint16_t cliente_puerto = 0;
 unsigned long cliente_hasta = 0;
+
+// Rango de detección actual en cm (lo fija la App según el modo de proximidad:
+// Carretera 40, Ciclovía 10, Ciudad 20, Nocturno 40)
+int distancia_umbral = DISTANCIA_UMBRAL_DEFECTO;
 
 // Variables de control remoto (las modifica la App)
 bool modo_manual = false;
@@ -106,7 +112,7 @@ bool cliente_activo() {
 // Envía la distancia (cm, -1 = sin lectura) a la App suscrita
 void enviar_telemetria(int cm) {
   char msg[64];
-  snprintf(msg, sizeof(msg), "{\"evt\":\"dist\",\"cm\":%d,\"umbral\":%d}", cm, DISTANCIA_UMBRAL);
+  snprintf(msg, sizeof(msg), "{\"evt\":\"dist\",\"cm\":%d,\"umbral\":%d}", cm, distancia_umbral);
   udp.beginPacket(cliente_ip, cliente_puerto);
   udp.print(msg);
   udp.endPacket();
@@ -192,6 +198,15 @@ int procesar_comando(const char* json, IPAddress remoto, uint16_t puertoRemoto) 
   // Si trae "nodo" y no es "A", el comando es para el ESP32
   const char* nodo = doc["nodo"] | "";
   if (nodo[0] != 0 && nodo[0] != 'A') return 0;
+
+  // La App fija el rango de detección (modo de proximidad). Va ANTES de la suscripción
+  // para que también funcione si la App lo incluye en el paquete de suscripción.
+  if (!doc["umbral"].isNull()) {
+    distancia_umbral = constrain((int)doc["umbral"], UMBRAL_MIN, UMBRAL_MAX);
+    Serial.print("Umbral de proximidad = ");
+    Serial.print(distancia_umbral);
+    Serial.println(" cm");
+  }
 
   // La App pide recibir las lecturas del sensor: se las enviamos a quien lo pidió
   if (doc["suscribir"] | false) {
@@ -280,7 +295,7 @@ void loop() {
   if ((!modo_manual || hay_cliente) && ahora - ultima_medicion >= INTERVALO_MEDICION_MS) {
     ultima_medicion = ahora;
     float distancia = medir_distancia();
-    presencia = (distancia < DISTANCIA_UMBRAL);
+    presencia = (distancia < distancia_umbral);
 
     // El estado hacia el ESP32 (LEDs/buzzer) solo se informa en modo automático
     if (!modo_manual && (presencia != ultimo_estado || primer_envio)) {
