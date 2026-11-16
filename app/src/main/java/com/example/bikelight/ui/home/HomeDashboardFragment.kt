@@ -17,9 +17,7 @@ import com.example.bikelight.data.local.AppDatabase
 import com.example.bikelight.data.local.UserProfile
 import com.example.bikelight.databinding.FragmentHomeDashboardBinding
 import com.example.bikelight.security.CryptoUtils
-import com.example.bikelight.ui.devices.SensorProximidad
 import com.example.bikelight.ui.devices.SimuladorProximidadFragment
-import com.example.bikelight.ui.devices.UdpClientManager
 import com.example.bikelight.ui.settings.PreferenciasFragment
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.database.FirebaseDatabase
@@ -27,20 +25,32 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 class HomeDashboardFragment : Fragment() {
-
-    private val locationPermissionLauncher = registerForActivityResult(
+    // Registra el contrato para solicitar permisos de SMS y ubicación (GPS) necesarios para el SOS automático
+    private val sosPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        val concedido = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+        val smsConcedido = permissions[Manifest.permission.SEND_SMS] == true
+        val gpsConcedido = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
                 permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-        if (!concedido) {
+
+        if (smsConcedido) {
+            if (!gpsConcedido) {
+                Toast.makeText(
+                    requireContext(),
+                    "Sin permiso de GPS se enviará la alerta sin coordenadas exactas",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+            viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
+                SosSender.dispararAlertaSos(requireContext())
+            }
+        } else {
             Toast.makeText(
                 requireContext(),
-                "Sin permiso de GPS se enviará la alerta sin coordenadas exactas",
-                Toast.LENGTH_SHORT
+                "Se requiere permiso de SMS para enviar la alerta SOS automáticamente",
+                Toast.LENGTH_LONG
             ).show()
         }
-        enviarSos()
     }
 
     private var _binding: FragmentHomeDashboardBinding? = null
@@ -59,6 +69,7 @@ class HomeDashboardFragment : Fragment() {
 
         cargarDatosUsuario()
 
+        // Configura la navegación de cada tarjeta del dashboard hacia su respectivo fragmento
         binding.cardSimuladorProximidad.setOnClickListener {
             mainActivity?.cargarFragment(SimuladorProximidadFragment(), "Proximidad del Sensor")
         }
@@ -91,11 +102,17 @@ class HomeDashboardFragment : Fragment() {
             mainActivity?.cargarFragment(PreferenciasFragment(), "Preferencias")
         }
 
+        // Configuración de la alerta SOS de emergencia al hacer clic en el botón correspondiente
         binding.cardContactoEmergencia.setOnClickListener {
             AlertDialog.Builder(requireContext())
                 .setTitle("¡ALERTA DE EMERGENCIA!")
                 .setMessage("¿Deseas enviar inmediatamente el mensaje SOS a tu contacto de emergencia con tu ubicación?")
                 .setPositiveButton("ENVIAR SOS") { _, _ ->
+                    val tienePermisoSms = ContextCompat.checkSelfPermission(
+                        requireContext(),
+                        Manifest.permission.SEND_SMS
+                    ) == PackageManager.PERMISSION_GRANTED
+
                     val tienePermisoFine = ContextCompat.checkSelfPermission(
                         requireContext(),
                         Manifest.permission.ACCESS_FINE_LOCATION
@@ -106,15 +123,19 @@ class HomeDashboardFragment : Fragment() {
                         Manifest.permission.ACCESS_COARSE_LOCATION
                     ) == PackageManager.PERMISSION_GRANTED
 
-                    if (!tienePermisoFine && !tienePermisoCoarse) {
-                        locationPermissionLauncher.launch(
+                    // Solicita permisos de SMS y ubicación si no están concedidos; de lo contrario, dispara el SOS directamente
+                    if (!tienePermisoSms || (!tienePermisoFine && !tienePermisoCoarse)) {
+                        sosPermissionLauncher.launch(
                             arrayOf(
+                                Manifest.permission.SEND_SMS,
                                 Manifest.permission.ACCESS_FINE_LOCATION,
                                 Manifest.permission.ACCESS_COARSE_LOCATION
                             )
                         )
                     } else {
-                        enviarSos()
+                        viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
+                            SosSender.dispararAlertaSos(requireContext())
+                        }
                     }
                 }
                 .setNegativeButton("Cancelar", null)
@@ -122,39 +143,20 @@ class HomeDashboardFragment : Fragment() {
         }
     }
 
-    private fun enviarSos() {
-        val appContext = context?.applicationContext ?: return
-        viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
-            SosSender.dispararAlertaSos(appContext)
-        }
-    }
-
-    fun enviarComandoAlEsp32(comando: String, alTerminar: ((Boolean) -> Unit)? = null) {
-        viewLifecycleOwner.lifecycleScope.launch {
-            val ok = UdpClientManager.sendCommand(comando)
-            alTerminar?.invoke(ok)
-        }
-    }
-
+    // Carga los datos del usuario en segundo plano y descifra información clave si no existe localmente
     private fun cargarDatosUsuario() {
         val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
-        val appContext = context?.applicationContext ?: return
+        val contextSafe = context ?: return
 
         viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
-            val db = AppDatabase.getDatabase(appContext)
+            val db = AppDatabase.getDatabase(contextSafe)
             val userLocal = db.userDao().getUserProfile(uid)
 
-            if (userLocal != null) {
-                ModosProximidad.guardarModo(appContext, userLocal.proximityMode)
-                SensorProximidad.fijarRango(ModosProximidad.rangoCm(userLocal.proximityMode))
-            } else {
+            if (userLocal == null) {
                 FirebaseDatabase.getInstance().reference.child("users").child(uid).get()
                     .addOnSuccessListener { snapshot ->
                         val userFirebase = snapshot.getValue(UserProfile::class.java)
                         if (userFirebase != null) {
-                            ModosProximidad.guardarModo(appContext, userFirebase.proximityMode)
-                            SensorProximidad.fijarRango(ModosProximidad.rangoCm(userFirebase.proximityMode))
-
                             val userDescifrado = userFirebase.copy(
                                 fullName = CryptoUtils.decrypt(userFirebase.fullName),
                                 phone = CryptoUtils.decrypt(userFirebase.phone),
@@ -162,10 +164,8 @@ class HomeDashboardFragment : Fragment() {
                                 emergencyContactPhone = CryptoUtils.decrypt(userFirebase.emergencyContactPhone),
                                 emergencyContactEmail = CryptoUtils.decrypt(userFirebase.emergencyContactEmail)
                             )
-                            if (_binding != null) {
-                                viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
-                                    db.userDao().saveUserProfile(userDescifrado)
-                                }
+                            viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
+                                db.userDao().saveUserProfile(userDescifrado)
                             }
                         }
                     }
