@@ -7,6 +7,7 @@ import android.view.ViewGroup
 import android.widget.Toast
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.lifecycleScope
+import com.example.bikelight.MainActivity
 import com.example.bikelight.data.local.AppDatabase
 import com.example.bikelight.databinding.FragmentModoProximidadBinding
 import com.example.bikelight.ui.devices.SensorProximidad
@@ -28,14 +29,12 @@ class ModoProximidadFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         cargarModoActual()
-        // configura las tarjetas de modo proximidad
         binding.cardModoCarretera.setOnClickListener { cambiarModo("Carretera") }
         binding.cardModoCiclovia.setOnClickListener { cambiarModo("Ciclovía") }
         binding.cardModoCiudad.setOnClickListener { cambiarModo("Ciudad") }
         binding.cardModoNocturno.setOnClickListener { cambiarModo("Nocturno") }
     }
 
-    // consulta el modo actual almacenado en Room y lo muestra en la parte superior
     private fun cargarModoActual() {
         val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
         val appContext = requireContext().applicationContext
@@ -45,8 +44,8 @@ class ModoProximidadFragment : Fragment() {
             val user = db.userDao().getUserProfile(uid)
             val modo = user?.proximityMode ?: ModosProximidad.MODO_POR_DEFECTO
 
-            // deja la copia local alineada con Room (el simulador lee de aquí)
             ModosProximidad.guardarModo(appContext, modo)
+            SensorProximidad.establecerRango(ModosProximidad.rangoCm(modo))
 
             withContext(Dispatchers.Main) {
                 _binding?.tvModoSeleccionado?.text = "Modo activo: $modo"
@@ -54,7 +53,6 @@ class ModoProximidadFragment : Fragment() {
         }
     }
 
-    // cambia y guarda el nuevo modo seleccionado en bd local y realtime database
     private fun cambiarModo(nuevoModo: String) {
         val uid = FirebaseAuth.getInstance().currentUser?.uid ?: return
         val appContext = requireContext().applicationContext
@@ -63,18 +61,14 @@ class ModoProximidadFragment : Fragment() {
 
         binding.tvModoSeleccionado.text = "Modo activo: $nuevoModo"
 
-        // copia local inmediata: el simulador y el envío al Arduino leen de aquí
         ModosProximidad.guardarModo(appContext, nuevoModo)
-
-        // envía el nuevo rango al Arduino (Nodo A) de inmediato y lo deja memorizado
-        // para las próximas suscripciones
         SensorProximidad.fijarRango(rangoCm)
 
+        (activity as? MainActivity)?.programarSincronizacionFirebase()
+
         lifecycleScope.launch(Dispatchers.IO) {
-            // guardar localmente
             db.userDao().updateProximityMode(uid, nuevoModo)
 
-            // sincronizar en firebase
             FirebaseDatabase.getInstance().reference.child("users").child(uid)
                 .child("proximityMode").setValue(nuevoModo)
 

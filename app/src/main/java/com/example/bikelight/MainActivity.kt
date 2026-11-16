@@ -10,19 +10,36 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
 import androidx.fragment.app.Fragment
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import com.example.bikelight.data.local.AppDatabase
+import com.example.bikelight.data.local.SensorReading
+import com.example.bikelight.data.sync.SyncReadingsWorker
 import com.example.bikelight.databinding.ActivityMainBinding
 import com.example.bikelight.ui.auth.AuthActivity
+import com.example.bikelight.ui.devices.SensorProximidad
 import com.example.bikelight.ui.devices.UdpClientManager
+import com.example.bikelight.ui.home.HistorialFragment
 import com.example.bikelight.ui.home.HomeDashboardFragment
+import com.example.bikelight.ui.home.ModosProximidad
 import com.example.bikelight.ui.home.PerfilFragment
 import com.example.bikelight.ui.home.WifiConnectionViewModel
 import com.example.bikelight.ui.home.WifiStatus
 import com.google.firebase.auth.FirebaseAuth
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
 
@@ -37,6 +54,9 @@ class MainActivity : AppCompatActivity() {
     var connectedSsid: String = ""
         private set
 
+    // Control de muestreo para evitar saturar SQLite si el sensor emite varias veces por segundo
+    private var ultimoGuardadoMs: Long = 0L
+
     // Variables de control para reconexión automática
     private var targetSsid: String = "RED BIKELIGHT"
     private var targetPassword: String = "75648955!"
@@ -45,7 +65,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var connectivityManager: ConnectivityManager
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
-    // Temporizador para reintentar conexión cada 5 segundos al perder señal
     private val reconnectHandler = Handler(Looper.getMainLooper())
     private val reconnectRunnable = object : Runnable {
         override fun run() {
@@ -66,9 +85,20 @@ class MainActivity : AppCompatActivity() {
 
         connectivityManager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
 
+        // Inicializar el rango del sensor con el modo guardado localmente
+        val modoInicial = ModosProximidad.modoGuardado(applicationContext)
+        SensorProximidad.establecerRango(ModosProximidad.rangoCm(modoInicial))
+
+        // Iniciar captura Offline-First desde el flujo real de SensorProximidad
+        iniciarPersistenciaOfflineSensor()
+
+        // Sincronizar lecturas pendientes acumuladas previamente
+        programarSincronizacionFirebase()
+
         // Intento inicial automático con el SSID configurado
         conectarARedEsp32(targetSsid, targetPassword)
 
+        setupTopNavigation()
         setupBottomNavigation()
 
         if (savedInstanceState == null) {
@@ -76,16 +106,92 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun iniciarPersistenciaOfflineSensor() {
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                SensorProximidad.lecturas().collect { lectura ->
+                    // Ignorar si no hay señal (null) o está fuera de alcance (cm < 0)
+                    if (lectura == null || lectura.cm < 0) return@collect
+
+                    val modoActivo = ModosProximidad.modoGuardado(applicationContext)
+                    val umbralCm = if (lectura.umbralCm > 0) {
+                        lectura.umbralCm
+                    } else {
+                        ModosProximidad.rangoCm(modoActivo)
+                    }
+                    val limitePrecaucionCm = umbralCm * 2
+
+                    val esCritico = lectura.cm < umbralCm
+                    val ahora = System.currentTimeMillis()
+
+                    // Guardar cada 1.5 s en condiciones normales o cada 500 ms si hay alerta crítica
+                    val intervaloMinimo = if (esCritico) 500L else 1500L
+                    if (ahora - ultimoGuardadoMs < intervaloMinimo) return@collect
+                    ultimoGuardadoMs = ahora
+
+                    // Mismo criterio de clasificación que SimuladorProximidadFragment y firmware Arduino
+                    val nivelRiesgo = when {
+                        esCritico -> "CRITICO"
+                        lectura.cm < limitePrecaucionCm -> "MEDIO"
+                        else -> "BAJO"
+                    }
+
+                    val uid = FirebaseAuth.getInstance().currentUser?.uid ?: ""
+                    val registro = SensorReading(
+                        uid = uid,
+                        distanceCm = lectura.cm.toFloat(),
+                        riskLevel = nivelRiesgo,
+                        proximityMode = modoActivo,
+                        timestamp = ahora,
+                        isSynced = false
+                    )
+
+                    launch(Dispatchers.IO) {
+                        val db = AppDatabase.getDatabase(applicationContext)
+                        val rowId = db.sensorReadingDao().insertReading(registro)
+                        Log.d(
+                            "BikeLightOffline",
+                            "Guardado Room ID=$rowId | Modo=$modoActivo | Dist=${lectura.cm}cm (Umbral=${umbralCm}cm) | Riesgo=$nivelRiesgo"
+                        )
+                        programarSincronizacionFirebase()
+                    }
+                }
+            }
+        }
+    }
+
+    fun programarSincronizacionFirebase(forzarReemplazo: Boolean = false) {
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .build()
+
+        val syncWorkRequest = OneTimeWorkRequestBuilder<SyncReadingsWorker>()
+            .setConstraints(constraints)
+            .build()
+
+        val policy = if (forzarReemplazo) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP
+
+        WorkManager.getInstance(applicationContext).enqueueUniqueWork(
+            "SyncSensorReadingsOfflineWork",
+            policy,
+            syncWorkRequest
+        )
+    }
+
+    private fun setupTopNavigation() {
+        binding.btnTopHistorial.setOnClickListener {
+            cargarFragment(HistorialFragment(), "Historial de Paquetes")
+        }
+    }
+
     /**
      * ÚNICO punto de conexión al Access Point del ESP32.
-     * WifiConfigFragment debe llamar a esta función en lugar de crear su propio callback.
      */
     fun conectarARedEsp32(
         ssid: String = "RED BIKELIGHT",
         password: String = "75648955!",
         esReintento: Boolean = false
     ) {
-        // Cancelar cualquier reintento en cola antes de lanzar uno nuevo
         reconnectHandler.removeCallbacks(reconnectRunnable)
 
         targetSsid = ssid.trim()
@@ -115,12 +221,14 @@ class MainActivity : AppCompatActivity() {
                     super.onAvailable(network)
                     reconnectHandler.removeCallbacks(reconnectRunnable)
 
-                    // IMPORTANTE: NO usamos bindProcessToNetwork(), porque dejaría a toda la app
-                    // (Firebase, etc.) sin internet. Solo los sockets UDP usan esta red.
+                    // Solo los sockets UDP usan esta red; Firebase sigue usando datos móviles
                     UdpClientManager.esp32Network = network
-
                     isEsp32Connected = true
                     connectedSsid = targetSsid
+
+                    // Enviar de inmediato el rango del modo activo al Arduino (Nodo A) al conectarse
+                    val modoActual = ModosProximidad.modoGuardado(applicationContext)
+                    SensorProximidad.fijarRango(ModosProximidad.rangoCm(modoActual))
 
                     runOnUiThread {
                         wifiViewModel.updateStatus(WifiStatus.Connected(targetSsid))
@@ -172,7 +280,6 @@ class MainActivity : AppCompatActivity() {
             }
 
             try {
-                // Con timeout, onUnavailable() se dispara si el ESP32 no aparece en 30 s
                 connectivityManager.requestNetwork(networkRequest, networkCallback!!, 30_000)
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -241,6 +348,7 @@ class MainActivity : AppCompatActivity() {
         binding.tvHeaderTitle.text = title
         supportFragmentManager.beginTransaction()
             .replace(R.id.fragmentContainer, fragment)
+            .addToBackStack(null)
             .commit()
     }
 
