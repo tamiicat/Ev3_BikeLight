@@ -20,20 +20,38 @@
             android:orientation="vertical"
             android:padding="14dp">
 
-            <TextView
-                android:id="@+id/tvEstadoRedHistorial"
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Estado de Red: Verificando..."
-                android:textSize="15sp"
-                android:textStyle="bold" />
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/tvEstadoRedHistorial"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Estado de Red: Verificando..."
+                    android:textSize="15sp"
+                    android:textStyle="bold" />
+
+                <ImageButton
+                    android:id="@+id/btnLimpiarCache"
+                    android:layout_width="38dp"
+                    android:layout_height="38dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Limpiar caché local"
+                    android:padding="6dp"
+                    android:src="@android:drawable/ic_menu_delete"
+                    app:tint="#C62828" />
+            </LinearLayout>
 
             <TextView
                 android:id="@+id/tvResumenSync"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
-                android:text="Total: 0 | Online (Firebase): 0 | Offline (Local): 0"
+                android:text="Total: 0 | ONLINE: 0 | OFFLINE: 0"
                 android:textSize="13sp" />
 
             <com.google.android.material.button.MaterialButton

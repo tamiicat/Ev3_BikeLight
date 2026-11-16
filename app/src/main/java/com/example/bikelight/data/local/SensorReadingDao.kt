@@ -26,4 +26,7 @@ interface SensorReadingDao {
 
     @Query("SELECT * FROM sensor_readings ORDER BY timestamp DESC")
     fun observeAllReadings(): LiveData<List<SensorReading>>
+
+    @Query("DELETE FROM sensor_readings WHERE isSynced = 1")
+    suspend fun deleteSyncedReadings(): Int
 }

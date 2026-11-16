@@ -2,6 +2,7 @@ package com.example.bikelight.ui.home
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Bundle
 import android.view.LayoutInflater
@@ -9,8 +10,11 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
+import androidx.core.content.edit
 import androidx.core.graphics.toColorInt
 import androidx.fragment.app.Fragment
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.example.bikelight.MainActivity
@@ -24,6 +28,9 @@ import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.DatabaseReference
 import com.google.firebase.database.FirebaseDatabase
 import com.google.firebase.database.ValueEventListener
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -41,6 +48,14 @@ class HistorialFragment : Fragment() {
     private var firebaseRef: DatabaseReference? = null
     private var firebaseListener: ValueEventListener? = null
 
+    private var connectivityManager: ConnectivityManager? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    companion object {
+        private const val PREFS_HISTORIAL = "bikelight_historial_prefs"
+        private const val KEY_CACHE_CLEARED_AT = "cache_cleared_timestamp_"
+    }
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -57,6 +72,7 @@ class HistorialFragment : Fragment() {
         binding.rvHistorialPaquetes.layoutManager = LinearLayoutManager(requireContext())
         binding.rvHistorialPaquetes.adapter = adapter
 
+        registrarMonitorDeRed()
         actualizarEstadoInternet()
 
         val db = AppDatabase.getDatabase(requireContext())
@@ -69,6 +85,14 @@ class HistorialFragment : Fragment() {
 
         binding.btnForzarSync.setOnClickListener {
             actualizarEstadoInternet()
+            if (!tieneConexionInternet(requireContext())) {
+                Toast.makeText(
+                    requireContext(),
+                    "Sin conexión a internet (OFFLINE). Se sincronizará al reconectar.",
+                    Toast.LENGTH_SHORT
+                ).show()
+                return@setOnClickListener
+            }
             (activity as? MainActivity)?.programarSincronizacionFirebase(forzarReemplazo = true)
             Toast.makeText(
                 requireContext(),
@@ -76,6 +100,99 @@ class HistorialFragment : Fragment() {
                 Toast.LENGTH_SHORT
             ).show()
         }
+
+        binding.btnLimpiarCache.setOnClickListener {
+            confirmarLimpiezaCacheLocal(db)
+        }
+    }
+
+    private fun obtenerMarcaTiempoLimpieza(): Long {
+        val uid = FirebaseAuth.getInstance().currentUser?.uid ?: "default"
+        val prefs = requireContext().getSharedPreferences(PREFS_HISTORIAL, Context.MODE_PRIVATE)
+        return prefs.getLong("$KEY_CACHE_CLEARED_AT$uid", 0L)
+    }
+
+    private fun guardarMarcaTiempoLimpieza(timestamp: Long) {
+        val uid = FirebaseAuth.getInstance().currentUser?.uid ?: "default"
+        val prefs = requireContext().getSharedPreferences(PREFS_HISTORIAL, Context.MODE_PRIVATE)
+        prefs.edit {
+            putLong("$KEY_CACHE_CLEARED_AT$uid", timestamp)
+        }
+    }
+
+    private fun confirmarLimpiezaCacheLocal(db: AppDatabase) {
+        val totalVisibles = adapter.itemCount
+        if (totalVisibles == 0) {
+            Toast.makeText(requireContext(), "No hay registros en caché para limpiar.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        AlertDialog.Builder(requireContext())
+            .setTitle("Limpiar caché local")
+            .setMessage(
+                "Se eliminarán de la vista y de la caché del teléfono los registros ya sincronizados. " +
+                        "Tus datos respaldados en Firebase NO se borrarán."
+            )
+            .setPositiveButton("Limpiar") { _, _ ->
+                val ahora = System.currentTimeMillis()
+                viewLifecycleOwner.lifecycleScope.launch(Dispatchers.IO) {
+                    val eliminadosRoom = db.sensorReadingDao().deleteSyncedReadings()
+                    withContext(Dispatchers.Main) {
+                        if (_binding != null) {
+                            guardarMarcaTiempoLimpieza(ahora)
+                            val totalEliminadosVista = maxOf(eliminadosRoom, totalVisibles - lecturasLocales.count { !it.isSynced })
+                            fusionarYMostrarHistorial()
+                            Toast.makeText(
+                                requireContext(),
+                                "Caché eliminada ($totalEliminadosVista elementos eliminados de la app).",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    }
+                }
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
+    }
+
+    private fun registrarMonitorDeRed() {
+        val cm = requireContext().getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        connectivityManager = cm
+
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                activity?.runOnUiThread {
+                    if (_binding != null) {
+                        actualizarEstadoInternet()
+                        if (firebaseListener == null) {
+                            escucharPaquetesEnFirebase()
+                        }
+                    }
+                }
+            }
+
+            override fun onLost(network: Network) {
+                activity?.runOnUiThread {
+                    if (_binding != null) {
+                        actualizarEstadoInternet()
+                    }
+                }
+            }
+
+            override fun onCapabilitiesChanged(
+                network: Network,
+                networkCapabilities: NetworkCapabilities
+            ) {
+                activity?.runOnUiThread {
+                    if (_binding != null) {
+                        actualizarEstadoInternet()
+                    }
+                }
+            }
+        }
+
+        networkCallback = callback
+        cm.registerDefaultNetworkCallback(callback)
     }
 
     private fun escucharPaquetesEnFirebase() {
@@ -123,8 +240,10 @@ class HistorialFragment : Fragment() {
     }
 
     private fun fusionarYMostrarHistorial() {
-        actualizarEstadoInternet()
+        val hayInternet = tieneConexionInternet(requireContext())
+        actualizarEstadoInternet(hayInternet)
 
+        val marcaLimpieza = obtenerMarcaTiempoLimpieza()
         val mapaCombinado = LinkedHashMap<String, SensorReading>()
 
         for (item in lecturasLocales) {
@@ -132,10 +251,15 @@ class HistorialFragment : Fragment() {
             mapaCombinado[clave] = item
         }
 
-        for (itemNube in lecturasNube) {
-            val clave = "${itemNube.timestamp}_${itemNube.distanceCm}"
-            if (!mapaCombinado.containsKey(clave)) {
-                mapaCombinado[clave] = itemNube
+        // Solo fusionar lecturas de la nube posteriores a la última limpieza de caché local
+        if (hayInternet) {
+            for (itemNube in lecturasNube) {
+                if (itemNube.timestamp > marcaLimpieza) {
+                    val clave = "${itemNube.timestamp}_${itemNube.distanceCm}"
+                    if (!mapaCombinado.containsKey(clave)) {
+                        mapaCombinado[clave] = itemNube
+                    }
+                }
             }
         }
 
@@ -146,11 +270,12 @@ class HistorialFragment : Fragment() {
         val offline = total - online
 
         binding.tvResumenSync.text =
-            "Total: $total | Online (Firebase): $online | Offline (Local): $offline"
+            "Total: $total | ONLINE: $online | OFFLINE: $offline"
 
         if (listaFinal.isEmpty()) {
             binding.tvSinRegistros.visibility = View.VISIBLE
             binding.rvHistorialPaquetes.visibility = View.GONE
+            adapter.submitList(emptyList())
         } else {
             binding.tvSinRegistros.visibility = View.GONE
             binding.rvHistorialPaquetes.visibility = View.VISIBLE
@@ -158,13 +283,13 @@ class HistorialFragment : Fragment() {
         }
     }
 
-    private fun actualizarEstadoInternet() {
-        val hayInternet = tieneConexionInternet(requireContext())
+    private fun actualizarEstadoInternet(forzarEstado: Boolean? = null) {
+        val hayInternet = forzarEstado ?: tieneConexionInternet(requireContext())
         if (hayInternet) {
-            binding.tvEstadoRedHistorial.text = "Estado de Red: ONLINE (Conectado a Firebase)"
+            binding.tvEstadoRedHistorial.text = "Estado de Red: ONLINE"
             binding.tvEstadoRedHistorial.setTextColor("#2E7D32".toColorInt())
         } else {
-            binding.tvEstadoRedHistorial.text = "Estado de Red: OFFLINE (Modo Local Room)"
+            binding.tvEstadoRedHistorial.text = "Estado de Red: OFFLINE"
             binding.tvEstadoRedHistorial.setTextColor("#C62828".toColorInt())
         }
     }
@@ -173,12 +298,21 @@ class HistorialFragment : Fragment() {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val network = cm.activeNetwork ?: return false
         val caps = cm.getNetworkCapabilities(network) ?: return false
-        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
     }
 
     override fun onDestroyView() {
         super.onDestroyView()
+        networkCallback?.let {
+            try {
+                connectivityManager?.unregisterNetworkCallback(it)
+            } catch (_: Exception) {
+            }
+        }
+        networkCallback = null
         firebaseListener?.let { firebaseRef?.removeEventListener(it) }
+        firebaseListener = null
         _binding = null
     }
 
@@ -207,11 +341,11 @@ class HistorialFragment : Fragment() {
             holder.tvDetallePaquete.text = "Modo: ${item.proximityMode} | $fechaStr"
 
             if (item.isSynced) {
-                holder.tvBadgeSync.text = "ONLINE (Firebase)"
+                holder.tvBadgeSync.text = "ONLINE"
                 holder.tvBadgeSync.setTextColor("#2E7D32".toColorInt())
                 holder.tvBadgeSync.setBackgroundColor("#E8F5E9".toColorInt())
             } else {
-                holder.tvBadgeSync.text = "OFFLINE (Local)"
+                holder.tvBadgeSync.text = "OFFLINE"
                 holder.tvBadgeSync.setTextColor("#EF6C00".toColorInt())
                 holder.tvBadgeSync.setBackgroundColor("#FFF3E0".toColorInt())
             }
