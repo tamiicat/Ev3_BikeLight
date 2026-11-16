@@ -44,6 +44,8 @@ dependencies {
     implementation(libs.androidx.constraintlayout)
     // extensiones para actividades y APIs modernas
     implementation(libs.androidx.activity.ktx)
+    // WorkManager para sincronización en segundo plano (Offline-First)
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
 
     // SERVICIOS FIREBASE
     // BOM: gestiona las versiones de todas las librerías de firebase
